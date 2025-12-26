@@ -17,9 +17,11 @@ use crossbeam_channel as channel;
 use dpi::PhysicalSize;
 use url::Url;
 
-use crate::engine::flags;
-use crate::engine::input::{CoalescedMouseMove, InputEventQueue};
-use crate::engine::rendering::{GlfwSharedContext, GlfwTripleBufferRenderingContext};
+use crate::engine::input::{CoalescedMouseMove, CoalescedResize, InputEventQueue};
+use crate::engine::refresh::RefreshScheduler;
+use crate::engine::rendering::{
+    GlfwSharedContext, GlfwTripleBufferContextInit, GlfwTripleBufferRenderingContext,
+};
 use crate::engine::resources;
 use crate::engine::vsync::VsyncCallbackQueue;
 
@@ -43,6 +45,8 @@ pub(super) fn run_servo_thread(
     vsync_queue: Arc<VsyncCallbackQueue>,
     mouse_move_pending: Arc<PendingIdQueue>,
     input_pending: Arc<PendingIdQueue>,
+    resize_pending: Arc<PendingIdQueue>,
+    refresh_scheduler: Arc<RefreshScheduler>,
     command_rx: channel::Receiver<Command>,
     init_tx: channel::Sender<Result<(), String>>,
 ) {
@@ -199,11 +203,11 @@ pub(super) fn run_servo_thread(
         /// 每 view 的有界输入队列（鼠标移动单独处理）。
         input_queue: Arc<InputEventQueue>,
         /// ### English
-        /// Latest pending resize request (coalesced).
+        /// Shared coalesced resize state for this view.
         ///
         /// ### 中文
-        /// 最新的待处理 resize 请求（合并后）。
-        pending_resize: Option<PhysicalSize<u32>>,
+        /// 该 view 的 resize 合并状态（共享）。
+        resize: Arc<CoalescedResize>,
         /// ### English
         /// Latest pending URL load request (coalesced).
         ///
@@ -211,11 +215,17 @@ pub(super) fn run_servo_thread(
         /// 最新的待处理 URL load 请求（合并后）。
         pending_load_url: Option<Url>,
         /// ### English
-        /// Whether this entry is already queued in `pending_update_ids`.
+        /// Whether this entry is already queued in `pending_load_url_ids`.
         ///
         /// ### 中文
-        /// 该条目是否已进入 `pending_update_ids` 队列。
-        update_queued: bool,
+        /// 该条目是否已进入 `pending_load_url_ids` 队列。
+        load_url_queued: bool,
+        /// ### English
+        /// Last applied size (used to avoid redundant `resize()` calls).
+        ///
+        /// ### 中文
+        /// 上一次应用的尺寸（用于避免重复调用 `resize()`）。
+        last_size: PhysicalSize<u32>,
     }
 
     /// ### English
@@ -248,7 +258,59 @@ pub(super) fn run_servo_thread(
 
     let mut views: U32HashMap<ViewEntry> =
         U32HashMap::with_capacity_and_hasher(64, Default::default());
-    let mut pending_update_ids: Vec<u32> = Vec::with_capacity(64);
+    let mut pending_load_url_ids: Vec<u32> = Vec::with_capacity(64);
+
+    #[inline]
+    fn apply_resize(entry: &mut ViewEntry) {
+        let Some(size) = entry.resize.take() else {
+            return;
+        };
+        if size == entry.last_size {
+            return;
+        }
+        entry.last_size = size;
+        entry.servo_webview.resize(size);
+    }
+
+    #[inline]
+    fn apply_mouse_move(entry: &ViewEntry) {
+        if !entry.rendering_context.is_active() {
+            return;
+        }
+
+        let Some((x, y)) = entry.mouse_move.take() else {
+            return;
+        };
+
+        let point = servo::WebViewPoint::from(servo::DevicePoint::new(x, y));
+        entry
+            .servo_webview
+            .notify_input_event(servo::InputEvent::MouseMove(servo::MouseMoveEvent::new(
+                point,
+            )));
+    }
+
+    #[inline]
+    fn drain_input_queue(entry: &ViewEntry) {
+        loop {
+            let active = entry.rendering_context.is_active();
+            while let Some(raw) = entry.input_queue.pop() {
+                if active {
+                    dispatch_queued_input_event(&entry.servo_webview, raw);
+                }
+            }
+
+            entry.input_queue.clear_pending();
+            let Some(raw) = entry.input_queue.pop() else {
+                break;
+            };
+            entry.input_queue.mark_pending();
+
+            if entry.rendering_context.is_active() {
+                dispatch_queued_input_event(&entry.servo_webview, raw);
+            }
+        }
+    }
 
     loop {
         /*
@@ -265,21 +327,24 @@ pub(super) fn run_servo_thread(
                     initial_size,
                     shared,
                     mouse_move,
+                    resize,
                     input_queue,
                     target_fps,
-                    flags,
+                    unsafe_no_consumer_fence,
+                    unsafe_no_producer_fence,
                     response,
                 } => {
-                    let unsafe_no_consumer_fence = (flags
-                        & flags::XIAN_WEB_ENGINE_VIEW_CREATE_FLAG_UNSAFE_NO_CONSUMER_FENCE)
-                        != 0;
                     let rendering_context = match GlfwTripleBufferRenderingContext::new(
-                        shared_ctx.clone(),
-                        initial_size,
-                        shared,
-                        vsync_queue.clone(),
-                        target_fps,
-                        unsafe_no_consumer_fence,
+                        GlfwTripleBufferContextInit {
+                            shared_ctx: shared_ctx.clone(),
+                            initial_size,
+                            shared,
+                            vsync_queue: vsync_queue.clone(),
+                            target_fps,
+                            unsafe_no_consumer_fence,
+                            unsafe_no_producer_fence,
+                            refresh_scheduler: refresh_scheduler.clone(),
+                        },
                     ) {
                         Ok(ctx) => Rc::new(ctx),
                         Err(err) => {
@@ -305,9 +370,10 @@ pub(super) fn run_servo_thread(
                             rendering_context,
                             mouse_move,
                             input_queue,
-                            pending_resize: None,
+                            resize,
                             pending_load_url: None,
-                            update_queued: false,
+                            load_url_queued: false,
+                            last_size: initial_size,
                         },
                     );
 
@@ -318,19 +384,9 @@ pub(super) fn run_servo_thread(
                         continue;
                     };
                     entry.pending_load_url = Some(url);
-                    if !entry.update_queued {
-                        entry.update_queued = true;
-                        pending_update_ids.push(id);
-                    }
-                }
-                Command::Resize { id, size } => {
-                    let Some(entry) = views.get_mut(&id) else {
-                        continue;
-                    };
-                    entry.pending_resize = Some(size);
-                    if !entry.update_queued {
-                        entry.update_queued = true;
-                        pending_update_ids.push(id);
+                    if !entry.load_url_queued {
+                        entry.load_url_queued = true;
+                        pending_load_url_ids.push(id);
                     }
                 }
                 Command::SetActive { id, active } => {
@@ -362,20 +418,17 @@ pub(super) fn run_servo_thread(
 
         /*
         ### English
-        2) Apply coalesced URL/resize updates.
+        2) Apply coalesced URL updates.
 
         ### 中文
-        2) 应用合并后的 URL/resize 更新。
+        2) 应用合并后的 URL 更新。
         */
-        for id in pending_update_ids.drain(..) {
+        for id in pending_load_url_ids.drain(..) {
             let Some(entry) = views.get_mut(&id) else {
                 continue;
             };
-            entry.update_queued = false;
+            entry.load_url_queued = false;
 
-            if let Some(size) = entry.pending_resize.take() {
-                entry.servo_webview.resize(size);
-            }
             if let Some(url) = entry.pending_load_url.take() {
                 entry.servo_webview.load(url);
             }
@@ -383,80 +436,56 @@ pub(super) fn run_servo_thread(
 
         /*
         ### English
-        3) Dispatch coalesced mouse moves (only latest per view).
+        3) Apply coalesced resizes (only latest per view).
 
         ### 中文
-        3) 派发合并后的鼠标移动（每个 view 只取最新一次）。
+        3) 应用合并后的 resize（每个 view 只取最新一次）。
         */
-        while let Some(id) = mouse_move_pending.pop() {
-            let Some(entry) = views.get(&id) else {
+        while let Some(id) = resize_pending.pop() {
+            let Some(entry) = views.get_mut(&id) else {
                 continue;
             };
-            if !entry.rendering_context.is_active() {
-                continue;
-            }
-
-            let Some((x, y)) = entry.mouse_move.take() else {
-                continue;
-            };
-
-            let point = servo::WebViewPoint::from(servo::DevicePoint::new(x, y));
-            entry
-                .servo_webview
-                .notify_input_event(servo::InputEvent::MouseMove(servo::MouseMoveEvent::new(
-                    point,
-                )));
+            apply_resize(entry);
         }
 
-        if mouse_move_pending.take_overflowed() {
-            for entry in views.values() {
-                if !entry.rendering_context.is_active() {
-                    continue;
-                }
-
-                let Some((x, y)) = entry.mouse_move.take() else {
-                    continue;
-                };
-
-                let point = servo::WebViewPoint::from(servo::DevicePoint::new(x, y));
-                entry
-                    .servo_webview
-                    .notify_input_event(servo::InputEvent::MouseMove(servo::MouseMoveEvent::new(
-                        point,
-                    )));
+        if resize_pending.take_overflowed() {
+            for entry in views.values_mut() {
+                apply_resize(entry);
             }
         }
 
         /*
         ### English
-        4) Drain batched input queues and dispatch into Servo.
+        4) Dispatch coalesced mouse moves (only latest per view).
 
         ### 中文
-        4) Drain 批量输入队列并派发给 Servo。
+        4) 派发合并后的鼠标移动（每个 view 只取最新一次）。
+        */
+        while let Some(id) = mouse_move_pending.pop() {
+            let Some(entry) = views.get(&id) else {
+                continue;
+            };
+            apply_mouse_move(entry);
+        }
+
+        if mouse_move_pending.take_overflowed() {
+            for entry in views.values() {
+                apply_mouse_move(entry);
+            }
+        }
+
+        /*
+        ### English
+        5) Drain batched input queues and dispatch into Servo.
+
+        ### 中文
+        5) Drain 批量输入队列并派发给 Servo。
         */
         while let Some(id) = input_pending.pop() {
             let Some(entry) = views.get(&id) else {
                 continue;
             };
-
-            loop {
-                let active = entry.rendering_context.is_active();
-                while let Some(raw) = entry.input_queue.pop() {
-                    if active {
-                        dispatch_queued_input_event(&entry.servo_webview, raw);
-                    }
-                }
-
-                entry.input_queue.clear_pending();
-                let Some(raw) = entry.input_queue.pop() else {
-                    break;
-                };
-                entry.input_queue.mark_pending();
-
-                if entry.rendering_context.is_active() {
-                    dispatch_queued_input_event(&entry.servo_webview, raw);
-                }
-            }
+            drain_input_queue(entry);
         }
 
         if input_pending.take_overflowed() {
@@ -464,43 +493,25 @@ pub(super) fn run_servo_thread(
                 if !entry.input_queue.is_pending() {
                     continue;
                 }
-
-                loop {
-                    let active = entry.rendering_context.is_active();
-                    while let Some(raw) = entry.input_queue.pop() {
-                        if active {
-                            dispatch_queued_input_event(&entry.servo_webview, raw);
-                        }
-                    }
-
-                    entry.input_queue.clear_pending();
-                    let Some(raw) = entry.input_queue.pop() else {
-                        break;
-                    };
-                    entry.input_queue.mark_pending();
-
-                    if entry.rendering_context.is_active() {
-                        dispatch_queued_input_event(&entry.servo_webview, raw);
-                    }
-                }
+                drain_input_queue(entry);
             }
         }
 
         /*
         ### English
-        5) Let Servo do its internal work (timers/layout/script/painting scheduling).
+        6) Let Servo do its internal work (timers/layout/script/painting scheduling).
 
         ### 中文
-        5) 让 Servo 执行内部任务（计时器/布局/脚本/绘制调度）。
+        6) 让 Servo 执行内部任务（计时器/布局/脚本/绘制调度）。
         */
         servo.spin_event_loop();
 
         /*
         ### English
-        6) If anything woke us while spinning, continue without parking.
+        7) If anything woke us while spinning, continue without parking.
 
         ### 中文
-        6) 如果 spin 期间发生唤醒，则不 park 直接继续循环。
+        7) 如果 spin 期间发生唤醒，则不 park 直接继续循环。
         */
         if wake_pending.swap(false, Ordering::Relaxed) {
             continue;
@@ -508,10 +519,10 @@ pub(super) fn run_servo_thread(
 
         /*
         ### English
-        7) Park until an embedder command or waker unpark arrives.
+        8) Park until an embedder command or waker unpark arrives.
 
         ### 中文
-        7) park 等待宿主命令或 waker 的 unpark。
+        8) park 等待宿主命令或 waker 的 unpark。
         */
         thread::park();
     }

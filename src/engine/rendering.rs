@@ -10,4 +10,4 @@ mod shared_context;
 mod triple_buffer;
 
 pub use shared_context::GlfwSharedContext;
-pub use triple_buffer::GlfwTripleBufferRenderingContext;
+pub use triple_buffer::{GlfwTripleBufferContextInit, GlfwTripleBufferRenderingContext};

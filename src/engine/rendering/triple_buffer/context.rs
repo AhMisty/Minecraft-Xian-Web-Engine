@@ -9,164 +9,33 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dpi::PhysicalSize;
-use gleam::gl::{self, Gl};
-use glow::HasContext as _;
-use surfman::Connection;
-
 use crate::engine::frame::{
     SLOT_FREE, SLOT_READY, SLOT_RELEASE_PENDING, SLOT_RENDERING, SharedFrameState,
     TRIPLE_BUFFER_COUNT,
 };
-use crate::engine::refresh::{FixedIntervalRefreshDriver, VsyncRefreshDriver};
+use crate::engine::refresh::{FixedIntervalRefreshDriver, RefreshScheduler, VsyncRefreshDriver};
 use crate::engine::vsync::VsyncCallbackQueue;
+use dpi::PhysicalSize;
+use gleam::gl::{self, Gl};
+use glow::HasContext as _;
 
-use super::shared_context::GlfwSharedContext;
+use super::super::shared_context::GlfwSharedContext;
+use super::slot::TripleBufferSlot;
 
-struct TripleBufferSlot {
-    /// ### English
-    /// Offscreen framebuffer object ID.
-    ///
-    /// ### 中文
-    /// 离屏 framebuffer 对象 ID。
-    framebuffer_id: gl::GLuint,
-    /// ### English
-    /// Color texture attached to `framebuffer_id` (shared with the Java context).
-    ///
-    /// ### 中文
-    /// 绑定到 `framebuffer_id` 的颜色纹理（与 Java 上下文共享）。
-    texture_id: gl::GLuint,
-    /// ### English
-    /// Current allocated texture size (pixels).
-    ///
-    /// ### 中文
-    /// 当前纹理分配尺寸（像素）。
-    size: PhysicalSize<u32>,
-}
-
-impl TripleBufferSlot {
-    fn new(gl: &Rc<dyn Gl>, depth_stencil_rb: gl::GLuint, size: PhysicalSize<u32>) -> Self {
-        let framebuffer_ids = gl.gen_framebuffers(1);
-        gl.bind_framebuffer(gl::FRAMEBUFFER, framebuffer_ids[0]);
-
-        let texture_ids = gl.gen_textures(1);
-        gl.bind_texture(gl::TEXTURE_2D, texture_ids[0]);
-        gl.tex_image_2d(
-            gl::TEXTURE_2D,
-            0,
-            gl::RGBA as gl::GLint,
-            size.width as gl::GLsizei,
-            size.height as gl::GLsizei,
-            0,
-            gl::RGBA,
-            gl::UNSIGNED_BYTE,
-            None,
-        );
-        gl.tex_parameter_i(
-            gl::TEXTURE_2D,
-            gl::TEXTURE_MAG_FILTER,
-            gl::NEAREST as gl::GLint,
-        );
-        gl.tex_parameter_i(
-            gl::TEXTURE_2D,
-            gl::TEXTURE_MIN_FILTER,
-            gl::NEAREST as gl::GLint,
-        );
-        gl.framebuffer_texture_2d(
-            gl::FRAMEBUFFER,
-            gl::COLOR_ATTACHMENT0,
-            gl::TEXTURE_2D,
-            texture_ids[0],
-            0,
-        );
-        gl.bind_texture(gl::TEXTURE_2D, 0);
-        gl.framebuffer_renderbuffer(
-            gl::FRAMEBUFFER,
-            gl::DEPTH_STENCIL_ATTACHMENT,
-            gl::RENDERBUFFER,
-            depth_stencil_rb,
-        );
-
-        Self {
-            framebuffer_id: framebuffer_ids[0],
-            texture_id: texture_ids[0],
-            size,
-        }
-    }
-
-    fn resize(&mut self, gl: &Rc<dyn Gl>, new_size: PhysicalSize<u32>) {
-        if self.size == new_size {
-            return;
-        }
-
-        gl.bind_texture(gl::TEXTURE_2D, self.texture_id);
-        gl.tex_image_2d(
-            gl::TEXTURE_2D,
-            0,
-            gl::RGBA as gl::GLint,
-            new_size.width as gl::GLsizei,
-            new_size.height as gl::GLsizei,
-            0,
-            gl::RGBA,
-            gl::UNSIGNED_BYTE,
-            None,
-        );
-        gl.bind_texture(gl::TEXTURE_2D, 0);
-
-        self.size = new_size;
-    }
-
-    fn delete(&self, gl: &Rc<dyn Gl>) {
-        gl.delete_textures(&[self.texture_id]);
-        gl.delete_framebuffers(&[self.framebuffer_id]);
-    }
-
-    fn bind(&self, gl: &Rc<dyn Gl>) {
-        gl.bind_framebuffer(gl::FRAMEBUFFER, self.framebuffer_id);
-    }
-
-    fn read_to_image(
-        &self,
-        gl: &Rc<dyn Gl>,
-        source_rectangle: servo::DeviceIntRect,
-    ) -> Option<servo::RgbaImage> {
-        gl.bind_framebuffer(gl::FRAMEBUFFER, self.framebuffer_id);
-        gl.bind_vertex_array(0);
-
-        let mut pixels = gl.read_pixels(
-            source_rectangle.min.x,
-            source_rectangle.min.y,
-            source_rectangle.width(),
-            source_rectangle.height(),
-            gl::RGBA,
-            gl::UNSIGNED_BYTE,
-        );
-
-        /*
-        ### English
-        Flip image vertically (texture coordinate origin differs).
-
-        ### 中文
-        垂直翻转图像（纹理坐标原点方向不同）。
-        */
-        let source_rectangle = source_rectangle.to_usize();
-        let stride = source_rectangle.width() * 4;
-        let height = source_rectangle.height();
-        for y in 0..(height / 2) {
-            let top_start = y * stride;
-            let bottom_start = (height - y - 1) * stride;
-            let (head, tail) = pixels.split_at_mut(bottom_start);
-            let top = &mut head[top_start..top_start + stride];
-            let bottom = &mut tail[..stride];
-            top.swap_with_slice(bottom);
-        }
-
-        servo::RgbaImage::from_raw(
-            source_rectangle.width() as u32,
-            source_rectangle.height() as u32,
-            pixels,
-        )
-    }
+/// ### English
+/// Initialization parameters for `GlfwTripleBufferRenderingContext`.
+///
+/// ### 中文
+/// `GlfwTripleBufferRenderingContext` 的初始化参数。
+pub struct GlfwTripleBufferContextInit {
+    pub shared_ctx: Rc<GlfwSharedContext>,
+    pub initial_size: PhysicalSize<u32>,
+    pub shared: Arc<SharedFrameState>,
+    pub vsync_queue: Arc<VsyncCallbackQueue>,
+    pub target_fps: u32,
+    pub unsafe_no_consumer_fence: bool,
+    pub unsafe_no_producer_fence: bool,
+    pub refresh_scheduler: Arc<RefreshScheduler>,
 }
 
 /// ### English
@@ -180,79 +49,103 @@ pub struct GlfwTripleBufferRenderingContext {
     ///
     /// ### 中文
     /// Servo 线程使用的共享离屏 GLFW 上下文。
-    shared_ctx: Rc<GlfwSharedContext>,
+    pub(super) shared_ctx: Rc<GlfwSharedContext>,
     /// ### English
     /// gleam GL API wrapper used by Servo/WebRender.
     ///
     /// ### 中文
     /// Servo/WebRender 使用的 gleam GL API 封装。
-    gl: Rc<dyn Gl>,
+    pub(super) gl: Rc<dyn Gl>,
     /// ### English
     /// glow GL API used for fence/sync operations.
     ///
     /// ### 中文
     /// 用于 fence/sync 操作的 glow GL API。
-    glow: Arc<glow::Context>,
+    pub(super) glow: Arc<glow::Context>,
     /// ### English
     /// Optional refresh driver (external-vsync or fixed interval).
     ///
     /// ### 中文
     /// 可选 refresh driver（外部 vsync 或固定间隔）。
-    refresh_driver: Option<Rc<dyn servo::RefreshDriver>>,
+    pub(super) refresh_driver: Option<Rc<dyn servo::RefreshDriver>>,
     /// ### English
     /// Current logical size of the rendering surface.
     ///
     /// ### 中文
     /// 当前渲染表面的逻辑尺寸。
-    size: Cell<PhysicalSize<u32>>,
+    pub(super) size: Cell<PhysicalSize<u32>>,
     /// ### English
     /// Shared depth-stencil renderbuffer (rebound on each slot FBO).
     ///
     /// ### 中文
     /// 共享的深度/模板 renderbuffer（绑定到各槽位 FBO）。
-    depth_stencil_rb: gl::GLuint,
+    pub(super) depth_stencil_rb: gl::GLuint,
     /// ### English
     /// Triple-buffer slot storage (FBO + texture per slot).
     ///
     /// ### 中文
     /// 三缓冲槽位存储（每槽位一个 FBO + 纹理）。
-    slots: RefCell<[TripleBufferSlot; TRIPLE_BUFFER_COUNT]>,
+    pub(super) slots: RefCell<[TripleBufferSlot; TRIPLE_BUFFER_COUNT]>,
     /// ### English
     /// Index of the current producer-owned back slot.
     ///
     /// ### 中文
     /// 当前生产者持有的 back 槽位索引。
-    back_slot: Cell<usize>,
+    pub(super) back_slot: Cell<usize>,
     /// ### English
     /// Reserved next back slot (preflight reservation to reduce stalls).
     ///
     /// ### 中文
     /// 预留的下一 back 槽位（用于 preflight 以减少卡顿）。
-    reserved_next_back: Cell<Option<usize>>,
+    pub(super) reserved_next_back: Cell<Option<usize>>,
     /// ### English
     /// Monotonic frame sequence generator (wraps; 0 is reserved).
     ///
     /// ### 中文
     /// 单调递增帧序号生成器（会回绕；0 保留不用）。
-    next_frame_seq: Cell<u64>,
+    pub(super) next_frame_seq: Cell<u64>,
     /// ### English
     /// Lock-free shared frame state consumed by Java.
     ///
     /// ### 中文
     /// 供 Java 消费的无锁共享帧状态。
-    shared: Arc<SharedFrameState>,
+    pub(super) shared: Arc<SharedFrameState>,
     /// ### English
     /// Unsafe mode: ignore Java-side consumer fences (faster but may overwrite in-use textures).
     ///
     /// ### 中文
     /// 不安全模式：忽略 Java 侧 consumer fence（更快但可能覆盖正在使用的纹理）。
-    unsafe_no_consumer_fence: bool,
+    pub(super) unsafe_no_consumer_fence: bool,
+    /// ### English
+    /// Unsafe mode: skip producer-side fences for new frames (lower overhead).
+    ///
+    /// ### 中文
+    /// 不安全模式：跳过生产者侧 fence（开销更低）。
+    pub(super) unsafe_no_producer_fence: bool,
     /// ### English
     /// Guard flag to make GL teardown idempotent.
     ///
     /// ### 中文
     /// 防重入标记：保证 GL 资源销毁幂等。
-    destroyed: Cell<bool>,
+    pub(super) destroyed: Cell<bool>,
+    /// ### English
+    /// Internal format used for color attachments (sRGB or linear RGBA).
+    ///
+    /// ### 中文
+    /// 颜色附件使用的内部格式（sRGB 或线性 RGBA）。
+    pub(super) internal_format: gl::GLint,
+    /// ### English
+    /// Whether sRGB framebuffer output is enabled.
+    ///
+    /// ### 中文
+    /// 是否启用 sRGB framebuffer 输出。
+    pub(super) use_srgb: bool,
+    /// ### English
+    /// Cached sRGB state to avoid redundant GL state toggles.
+    ///
+    /// ### 中文
+    /// 缓存的 sRGB 状态，避免重复切换 GL 状态。
+    pub(super) srgb_enabled: Cell<bool>,
 }
 
 impl GlfwTripleBufferRenderingContext {
@@ -267,18 +160,28 @@ impl GlfwTripleBufferRenderingContext {
     ///
     /// 必须在 Servo 线程（持有 `shared_ctx` 的线程）调用。
     /// 若 `target_fps == 0`，则由外部 vsync（`VsyncRefreshDriver`）驱动刷新。
-    pub fn new(
-        shared_ctx: Rc<GlfwSharedContext>,
-        initial_size: PhysicalSize<u32>,
-        shared: Arc<SharedFrameState>,
-        vsync_queue: Arc<VsyncCallbackQueue>,
-        target_fps: u32,
-        unsafe_no_consumer_fence: bool,
-    ) -> Result<Self, String> {
+    pub fn new(init: GlfwTripleBufferContextInit) -> Result<Self, String> {
+        let GlfwTripleBufferContextInit {
+            shared_ctx,
+            initial_size,
+            shared,
+            vsync_queue,
+            target_fps,
+            unsafe_no_consumer_fence,
+            unsafe_no_producer_fence,
+            refresh_scheduler,
+        } = init;
+
         shared_ctx.make_current_unsafe();
 
         let gl = shared_ctx.gleam_gl();
         let glow = shared_ctx.glow_gl();
+        let use_srgb = shared_ctx.supports_srgb();
+        let internal_format = if use_srgb {
+            gl::SRGB8_ALPHA8 as gl::GLint
+        } else {
+            gl::RGBA as gl::GLint
+        };
 
         let renderbuffer_ids = gl.gen_renderbuffers(1);
         let depth_stencil_rb = renderbuffer_ids[0];
@@ -291,8 +194,9 @@ impl GlfwTripleBufferRenderingContext {
         );
         gl.bind_renderbuffer(gl::RENDERBUFFER, 0);
 
-        let slots: [TripleBufferSlot; TRIPLE_BUFFER_COUNT] =
-            std::array::from_fn(|_| TripleBufferSlot::new(&gl, depth_stencil_rb, initial_size));
+        let slots: [TripleBufferSlot; TRIPLE_BUFFER_COUNT] = std::array::from_fn(|_| {
+            TripleBufferSlot::new(&gl, depth_stencil_rb, initial_size, internal_format)
+        });
         for (i, slot) in slots.iter().enumerate() {
             shared.set_texture_id(i, slot.texture_id);
         }
@@ -303,7 +207,7 @@ impl GlfwTripleBufferRenderingContext {
             let fps = target_fps.max(1) as u64;
             let nanos = (1_000_000_000u64 / fps).max(1);
             let driver: Rc<dyn servo::RefreshDriver> =
-                FixedIntervalRefreshDriver::new(Duration::from_nanos(nanos));
+                FixedIntervalRefreshDriver::new(refresh_scheduler, Duration::from_nanos(nanos));
             Some(driver)
         };
 
@@ -320,13 +224,17 @@ impl GlfwTripleBufferRenderingContext {
             next_frame_seq: Cell::new(0),
             shared,
             unsafe_no_consumer_fence,
+            unsafe_no_producer_fence,
             destroyed: Cell::new(false),
+            internal_format,
+            use_srgb,
+            srgb_enabled: Cell::new(false),
         };
         ctx.shared.store_state(0, SLOT_RENDERING);
         Ok(ctx)
     }
 
-    fn ensure_slot_size(&self, slot: usize) {
+    pub(super) fn ensure_slot_size(&self, slot: usize) {
         if slot >= TRIPLE_BUFFER_COUNT {
             return;
         }
@@ -339,11 +247,11 @@ impl GlfwTripleBufferRenderingContext {
             return;
         }
 
-        existing.resize(&self.gl, desired_size);
+        existing.resize(&self.gl, desired_size, self.internal_format);
         self.shared.set_slot_size(slot, desired_size);
     }
 
-    fn delete_producer_fence_if_any(&self, slot: usize) {
+    pub(super) fn delete_producer_fence_if_any(&self, slot: usize) {
         let fence_value = self.shared.get_producer_fence(slot);
         if fence_value == 0 {
             return;
@@ -355,7 +263,7 @@ impl GlfwTripleBufferRenderingContext {
         self.shared.clear_producer_fence(slot);
     }
 
-    fn delete_consumer_fence_if_any(&self, slot: usize) {
+    pub(super) fn delete_consumer_fence_if_any(&self, slot: usize) {
         let fence_value = self.shared.get_consumer_fence(slot);
         if fence_value == 0 {
             return;
@@ -404,7 +312,7 @@ impl GlfwTripleBufferRenderingContext {
         }
     }
 
-    fn try_reserve_next_back_slot(&self, current_back: usize) -> Option<usize> {
+    pub(super) fn try_reserve_next_back_slot(&self, current_back: usize) -> Option<usize> {
         debug_assert_eq!(TRIPLE_BUFFER_COUNT, 3);
         let slot_a = (current_back + 1) % TRIPLE_BUFFER_COUNT;
         let slot_b = (current_back + 2) % TRIPLE_BUFFER_COUNT;
@@ -598,152 +506,5 @@ impl GlfwTripleBufferRenderingContext {
 impl Drop for GlfwTripleBufferRenderingContext {
     fn drop(&mut self) {
         self.destroy_gl_resources();
-    }
-}
-
-impl servo::RenderingContext for GlfwTripleBufferRenderingContext {
-    fn read_to_image(&self, source_rectangle: servo::DeviceIntRect) -> Option<servo::RgbaImage> {
-        let slot = self.back_slot.get();
-        let slots = self.slots.borrow();
-        slots.get(slot)?.read_to_image(&self.gl, source_rectangle)
-    }
-
-    fn size(&self) -> PhysicalSize<u32> {
-        self.size.get()
-    }
-
-    fn resize(&self, new_size: PhysicalSize<u32>) {
-        let old_size = self.size.get();
-        if old_size == new_size {
-            return;
-        }
-
-        self.shared.set_resizing(true);
-        let _ = self.make_current();
-
-        let back_slot = self.back_slot.get();
-        let mut slots = self.slots.borrow_mut();
-
-        /*
-        ### English
-        Always resize the back slot; the producer thread owns it.
-
-        ### 中文
-        总是先 resize back 槽位；生产者线程拥有它的独占写权限。
-        */
-        self.gl
-            .bind_renderbuffer(gl::RENDERBUFFER, self.depth_stencil_rb);
-        self.gl.renderbuffer_storage(
-            gl::RENDERBUFFER,
-            gl::DEPTH24_STENCIL8,
-            new_size.width as gl::GLsizei,
-            new_size.height as gl::GLsizei,
-        );
-        self.gl.bind_renderbuffer(gl::RENDERBUFFER, 0);
-
-        self.delete_producer_fence_if_any(back_slot);
-        if !self.unsafe_no_consumer_fence {
-            self.delete_consumer_fence_if_any(back_slot);
-        }
-        slots[back_slot].resize(&self.gl, new_size);
-        self.shared.set_slot_size(back_slot, new_size);
-        self.shared.clear_producer_fence(back_slot);
-        if !self.unsafe_no_consumer_fence {
-            self.shared.clear_consumer_fence(back_slot);
-        }
-        self.shared.store_state(back_slot, SLOT_RENDERING);
-
-        for slot in 0..TRIPLE_BUFFER_COUNT {
-            if slot == back_slot {
-                continue;
-            }
-
-            let locked = self
-                .shared
-                .compare_exchange_state(slot, SLOT_READY, SLOT_RENDERING)
-                .is_ok()
-                || self
-                    .shared
-                    .compare_exchange_state(slot, SLOT_FREE, SLOT_RENDERING)
-                    .is_ok();
-            if !locked {
-                continue;
-            }
-
-            self.delete_producer_fence_if_any(slot);
-            if !self.unsafe_no_consumer_fence {
-                self.delete_consumer_fence_if_any(slot);
-            }
-            slots[slot].resize(&self.gl, new_size);
-            self.shared.set_slot_size(slot, new_size);
-            self.shared.clear_producer_fence(slot);
-            if !self.unsafe_no_consumer_fence {
-                self.shared.clear_consumer_fence(slot);
-            }
-            self.shared.store_state(slot, SLOT_FREE);
-        }
-
-        self.size.set(new_size);
-        self.shared.set_resizing(false);
-    }
-
-    fn prepare_for_rendering(&self) {
-        let idx = self.back_slot.get();
-        self.ensure_slot_size(idx);
-        let slots = self.slots.borrow();
-        slots[idx].bind(&self.gl);
-    }
-
-    fn present(&self) {
-        let current_back = self.back_slot.get();
-
-        let next_back = self.reserved_next_back.take();
-        let Some(next_back) = next_back.or_else(|| self.try_reserve_next_back_slot(current_back))
-        else {
-            return;
-        };
-
-        /*
-        ### English
-        Insert a fence for the consumer thread.
-
-        ### 中文
-        为消费者线程插入 GPU fence。
-        */
-        let sync = unsafe { self.glow.fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0) }.ok();
-        unsafe {
-            self.glow.flush();
-        }
-
-        let sync_value = sync.map(|s| s.0 as usize as u64).unwrap_or(0);
-        let mut new_seq = self.next_frame_seq.get().wrapping_add(1);
-        if new_seq == 0 {
-            new_seq = 1;
-        }
-        self.next_frame_seq.set(new_seq);
-        self.shared.publish(current_back, sync_value, new_seq);
-
-        self.back_slot.set(next_back);
-    }
-
-    fn make_current(&self) -> Result<(), surfman::Error> {
-        self.shared_ctx.make_current_unsafe();
-        Ok(())
-    }
-
-    fn gleam_gl_api(&self) -> Rc<dyn gleam::gl::Gl> {
-        self.gl.clone()
-    }
-
-    fn glow_gl_api(&self) -> Arc<glow::Context> {
-        self.glow.clone()
-    }
-
-    fn connection(&self) -> Option<Connection> {
-        Some(self.shared_ctx.connection_clone())
-    }
-
-    fn refresh_driver(&self) -> Option<Rc<dyn servo::RefreshDriver>> {
-        self.refresh_driver.clone()
     }
 }

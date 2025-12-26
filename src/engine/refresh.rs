@@ -10,7 +10,7 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::rc::Rc;
 use std::sync::{
-    Arc, OnceLock,
+    Arc, Mutex,
     atomic::{AtomicU64, Ordering as AtomicOrdering},
 };
 use std::thread;
@@ -67,6 +67,7 @@ impl Ord for ScheduledTask {
 
 enum SchedulerMsg {
     Schedule(ScheduledTask),
+    Shutdown,
 }
 
 /// ### English
@@ -87,29 +88,32 @@ pub struct RefreshScheduler {
     /// ### 中文
     /// 单调递增的任务序号生成器。
     next_seq: AtomicU64,
+    /// ### English
+    /// Join handle for the scheduler thread (taken on Drop for clean shutdown).
+    ///
+    /// ### 中文
+    /// 调度线程的 JoinHandle，Drop 时获取以便干净退出。
+    thread: Mutex<Option<thread::JoinHandle<()>>>,
 }
 
 impl RefreshScheduler {
     /// ### English
-    /// Returns a process-wide scheduler instance (lazy initialized).
+    /// Creates a scheduler backed by a single worker thread.
     ///
     /// ### 中文
-    /// 返回进程级全局调度器实例（懒初始化）。
-    pub fn global() -> Arc<Self> {
-        static INSTANCE: OnceLock<Arc<RefreshScheduler>> = OnceLock::new();
-        INSTANCE
-            .get_or_init(|| {
-                let (tx, rx) = channel::unbounded::<SchedulerMsg>();
-                thread::Builder::new()
-                    .name("XianRefreshDriver".to_string())
-                    .spawn(move || run_scheduler(rx))
-                    .expect("failed to spawn refresh scheduler thread");
-                Arc::new(RefreshScheduler {
-                    tx,
-                    next_seq: AtomicU64::new(1),
-                })
-            })
-            .clone()
+    /// 创建一个由单线程驱动的调度器。
+    pub fn new() -> Arc<Self> {
+        let (tx, rx) = channel::unbounded::<SchedulerMsg>();
+        let thread = thread::Builder::new()
+            .name("XianRefreshDriver".to_string())
+            .spawn(move || run_scheduler(rx))
+            .expect("failed to spawn refresh scheduler thread");
+
+        Arc::new(RefreshScheduler {
+            tx,
+            next_seq: AtomicU64::new(1),
+            thread: Mutex::new(Some(thread)),
+        })
     }
 
     /// ### English
@@ -125,6 +129,15 @@ impl RefreshScheduler {
             callback,
         };
         let _ = self.tx.send(SchedulerMsg::Schedule(task));
+    }
+}
+
+impl Drop for RefreshScheduler {
+    fn drop(&mut self) {
+        if let Some(thread) = self.thread.lock().expect("lock poisoned").take() {
+            let _ = self.tx.send(SchedulerMsg::Shutdown);
+            let _ = thread.join();
+        }
     }
 }
 
@@ -164,6 +177,7 @@ fn run_scheduler(rx: channel::Receiver<SchedulerMsg>) {
 
         match msg {
             SchedulerMsg::Schedule(task) => queue.push(task),
+            SchedulerMsg::Shutdown => return,
         }
     }
 }
@@ -194,9 +208,9 @@ impl FixedIntervalRefreshDriver {
     ///
     /// ### 中文
     /// 创建固定间隔 refresh driver。
-    pub fn new(frame_duration: Duration) -> Rc<Self> {
+    pub fn new(scheduler: Arc<RefreshScheduler>, frame_duration: Duration) -> Rc<Self> {
         Rc::new(Self {
-            scheduler: RefreshScheduler::global(),
+            scheduler,
             frame_duration,
         })
     }

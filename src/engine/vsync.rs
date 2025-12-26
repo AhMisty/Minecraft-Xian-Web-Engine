@@ -17,6 +17,7 @@ const CACHE_LINE_BYTES: usize = 64;
 const ATOMIC_USIZE_BYTES: usize = std::mem::size_of::<AtomicUsize>();
 const CACHE_PAD_BYTES: usize = CACHE_LINE_BYTES - ATOMIC_USIZE_BYTES;
 const VSYNC_OVERFLOW_NODE_PREALLOC: usize = 1024;
+const VSYNC_OVERFLOW_MAX: usize = 8192;
 
 struct VsyncRingSlot {
     /// ### English
@@ -79,6 +80,12 @@ pub struct VsyncCallbackQueue {
     /// ### 中文
     /// overflow 节点的 free-list（复用以避免分配）。
     free: AtomicPtr<VsyncCallbackNode>,
+    /// ### English
+    /// Count of overflow callbacks queued (caps growth when tick stalls).
+    ///
+    /// ### 中文
+    /// 当前排队的溢出回调数量（tick 停滞时用于限制增长）。
+    overflow_len: AtomicUsize,
 }
 
 impl VsyncCallbackQueue {
@@ -127,6 +134,7 @@ impl VsyncCallbackQueue {
             slots: slots.into_boxed_slice(),
             callbacks: AtomicPtr::new(ptr::null_mut()),
             free: AtomicPtr::new(free_head),
+            overflow_len: AtomicUsize::new(0),
         }
     }
 
@@ -194,6 +202,7 @@ impl VsyncCallbackQueue {
 
         let mut free_head: *mut VsyncCallbackNode = ptr::null_mut();
         let mut free_tail: *mut VsyncCallbackNode = ptr::null_mut();
+        let mut drained_overflow = 0usize;
 
         while !overflow.is_null() {
             unsafe {
@@ -203,6 +212,7 @@ impl VsyncCallbackQueue {
                 if let Some(callback) = (*current).callback.take() {
                     callback();
                 }
+                drained_overflow += 1;
 
                 (*current).next = ptr::null_mut();
                 if free_head.is_null() {
@@ -218,9 +228,19 @@ impl VsyncCallbackQueue {
         if !free_head.is_null() {
             self.push_free_list(free_head, free_tail);
         }
+        if drained_overflow > 0 {
+            self.overflow_len
+                .fetch_sub(drained_overflow, Ordering::Release);
+        }
     }
 
     fn enqueue_overflow(&self, callback: VsyncCallback) {
+        let prev = self.overflow_len.fetch_add(1, Ordering::Relaxed);
+        if prev >= VSYNC_OVERFLOW_MAX {
+            self.overflow_len.fetch_sub(1, Ordering::Relaxed);
+            return;
+        }
+
         let node_ptr = self.pop_free_node().unwrap_or_else(|| {
             Box::into_raw(Box::new(VsyncCallbackNode {
                 next: ptr::null_mut(),

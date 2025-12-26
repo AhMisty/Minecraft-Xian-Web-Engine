@@ -18,6 +18,29 @@ use surfman::Connection;
 
 use crate::engine::glfw;
 
+fn parse_gl_version(version: &str) -> (u32, u32) {
+    // Expected forms: "4.6.0 ..." or "OpenGL ES 3.2 ..."
+    let mut major = 0u32;
+    let mut minor = 0u32;
+    let tokens: Vec<&str> = version.split_whitespace().collect();
+    let number_token = tokens.iter().find(|t| {
+        t.chars()
+            .next()
+            .map(|c| c.is_ascii_digit())
+            .unwrap_or(false)
+    });
+    if let Some(token) = number_token {
+        let mut parts = token.split('.');
+        if let Some(m) = parts.next().and_then(|s| s.parse::<u32>().ok()) {
+            major = m;
+        }
+        if let Some(n) = parts.next().and_then(|s| s.parse::<u32>().ok()) {
+            minor = n;
+        }
+    }
+    (major, minor)
+}
+
 /*
 ### English
 Per-thread "current GLFW window" cache to avoid redundant `makeCurrent` calls.
@@ -66,6 +89,12 @@ pub struct GlfwSharedContext {
     /// ### 中文
     /// Servo 用于与平台 GL 栈集成的 surfman connection。
     surfman_connection: Connection,
+    /// ### English
+    /// Whether this context supports sRGB framebuffer/texture format.
+    ///
+    /// ### 中文
+    /// 是否支持 sRGB framebuffer/纹理格式。
+    srgb_supported: bool,
 }
 
 impl GlfwSharedContext {
@@ -96,6 +125,13 @@ impl GlfwSharedContext {
 
         let gl_version = unsafe { glow.get_parameter_string(glow::VERSION) };
         let is_gles = gl_version.starts_with("OpenGL ES");
+        let (major, minor) = parse_gl_version(&gl_version);
+        // Desktop GL: sRGB is core since 3.0; GLES since 3.0. Assume supported for newer versions.
+        let srgb_supported = if is_gles {
+            major >= 3
+        } else {
+            major >= 3 || (major == 2 && minor >= 1)
+        };
 
         let gl: Rc<dyn Gl> = unsafe {
             if is_gles {
@@ -120,6 +156,7 @@ impl GlfwSharedContext {
             gl,
             glow: Arc::new(glow),
             surfman_connection,
+            srgb_supported,
         }))
     }
 
@@ -166,6 +203,15 @@ impl GlfwSharedContext {
     /// 返回 surfman connection 的克隆（用于 Servo/WebRender 集成）。
     pub(in crate::engine::rendering) fn connection_clone(&self) -> Connection {
         self.surfman_connection.clone()
+    }
+
+    /// ### English
+    /// Returns whether sRGB framebuffer/texture formats are supported.
+    ///
+    /// ### 中文
+    /// 返回是否支持 sRGB framebuffer/纹理格式。
+    pub(in crate::engine::rendering) fn supports_srgb(&self) -> bool {
+        self.srgb_supported
     }
 }
 

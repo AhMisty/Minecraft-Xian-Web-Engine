@@ -61,12 +61,6 @@ pub(crate) struct AcquiredFrame {
     /// ### 中文
     /// 帧高度（像素）。
     pub height: u32,
-    /// ### English
-    /// Monotonic frame sequence number (wraps; 0 is reserved).
-    ///
-    /// ### 中文
-    /// 单调递增帧序号（会回绕；0 保留不用）。
-    pub frame_seq: u64,
 }
 
 #[repr(C, align(64))]
@@ -399,25 +393,6 @@ impl SharedFrameState {
         self.try_acquire_ready_slot(front_hint)
     }
 
-    /// ### English
-    /// Same as `try_acquire_front`, but only succeeds if the latest frame is newer than `last_seq`.
-    ///
-    /// ### 中文
-    /// 与 `try_acquire_front` 相同，但仅当最新帧比 `last_seq` 更新时才会成功。
-    pub fn try_acquire_front_if_newer(&self, last_seq: u64) -> Option<AcquiredFrame> {
-        if self.is_resizing() {
-            return None;
-        }
-
-        let packed = self.frame_meta.latest_packed.load(Ordering::Acquire);
-        let (latest, front_hint) = unpack_latest(packed);
-        if latest == 0 || latest <= last_seq {
-            return None;
-        }
-
-        self.try_acquire_ready_slot(front_hint)
-    }
-
     fn try_acquire_ready_slot(&self, front: usize) -> Option<AcquiredFrame> {
         let front = if front < TRIPLE_BUFFER_COUNT {
             front
@@ -494,7 +469,6 @@ impl SharedFrameState {
             producer_fence: slot_state.producer_fence.load(Ordering::Relaxed),
             width: size.width,
             height: size.height,
-            frame_seq: slot_state.frame_seq.load(Ordering::Relaxed),
         }
     }
 

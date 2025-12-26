@@ -10,6 +10,8 @@ use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
+use dpi::PhysicalSize;
+
 use crate::engine::input_types::XianWebEngineInputEvent;
 
 #[repr(C, align(64))]
@@ -86,6 +88,77 @@ fn unpack_f32x2(packed: u64) -> (f32, f32) {
     let x = (packed & 0xFFFF_FFFF) as u32;
     let y = (packed >> 32) as u32;
     (f32::from_bits(x), f32::from_bits(y))
+}
+
+#[repr(C, align(64))]
+/// ### English
+/// Coalesced resize state: keeps only the latest `(width, height)` until the Servo thread drains it.
+///
+/// ### 中文
+/// resize 合并状态：只保留最新的 `(width, height)`，等待 Servo 线程 drain。
+pub struct CoalescedResize {
+    /// ### English
+    /// Pending flag (`0` = no pending resize, `1` = pending).
+    ///
+    /// ### 中文
+    /// pending 标记（`0` = 无待处理 resize，`1` = 有待处理 resize）。
+    pending: AtomicU8,
+    _padding: [u8; 7],
+    /// ### English
+    /// Packed `(width, height)` as two `u32` values.
+    ///
+    /// ### 中文
+    /// 将 `(width, height)` 以两个 `u32` 打包到一个 `u64` 中。
+    packed_size: AtomicU64,
+}
+
+impl Default for CoalescedResize {
+    fn default() -> Self {
+        Self {
+            pending: AtomicU8::new(0),
+            _padding: [0; 7],
+            packed_size: AtomicU64::new(0),
+        }
+    }
+}
+
+impl CoalescedResize {
+    /// ### English
+    /// Stores the latest size and marks it pending.
+    /// Returns `true` if this call transitions from "not pending" to "pending".
+    ///
+    /// ### 中文
+    /// 写入最新尺寸并标记为 pending。
+    /// 若本次调用把状态从“非 pending”切换为“pending”，则返回 `true`。
+    pub fn set(&self, width: u32, height: u32) -> bool {
+        self.packed_size
+            .store(pack_u32x2(width, height), Ordering::Relaxed);
+        self.pending.swap(1, Ordering::Release) == 0
+    }
+
+    /// ### English
+    /// Takes the latest size if pending.
+    ///
+    /// ### 中文
+    /// 若处于 pending，则取出最新尺寸。
+    pub fn take(&self) -> Option<PhysicalSize<u32>> {
+        if self.pending.swap(0, Ordering::Acquire) == 0 {
+            return None;
+        }
+        let packed = self.packed_size.load(Ordering::Relaxed);
+        let (width, height) = unpack_u32x2(packed);
+        Some(PhysicalSize::new(width, height))
+    }
+}
+
+#[inline]
+fn pack_u32x2(width: u32, height: u32) -> u64 {
+    (width as u64) | ((height as u64) << 32)
+}
+
+#[inline]
+fn unpack_u32x2(packed: u64) -> (u32, u32) {
+    (packed as u32, (packed >> 32) as u32)
 }
 
 const INPUT_QUEUE_CAPACITY: usize = 256;
@@ -268,33 +341,32 @@ impl InputEventQueue {
         }
     }
 
-    #[inline]
     /// ### English
-    /// Single-producer fast path. Only use when the embedder guarantees one producer thread.
+    /// Tries to push a batch of events; returns the number of accepted events (may be less than
+    /// `events.len()` if the queue is full).
+    ///
+    /// In single-producer mode, this uses a batched SPSC fast path to reduce atomic traffic.
     ///
     /// ### 中文
-    /// 单生产者快路径。仅在宿主保证只有一个生产者线程时使用。
-    pub fn try_push_single_producer(&self, event: XianWebEngineInputEvent) -> bool {
+    /// 尝试批量 push 一组事件；返回实际接收的事件数（若队列已满，可能小于 `events.len()`）。
+    ///
+    /// 单生产者模式下会使用批量 SPSC 快路径，以减少原子操作开销。
+    pub fn try_push_slice(&self, events: &[XianWebEngineInputEvent]) -> usize {
+        if events.is_empty() {
+            return 0;
+        }
         if self.single_producer {
-            return self.try_push_spsc(event);
+            return self.try_push_slice_spsc(events);
         }
 
-        let pos = self.enqueue_pos.load(Ordering::Relaxed);
-        let slot = &self.slots[pos & INPUT_QUEUE_MASK];
-        let seq = slot.seq.load(Ordering::Acquire);
-        let dif = seq as isize - pos as isize;
-
-        if dif != 0 {
-            return false;
+        let mut accepted = 0usize;
+        for &event in events {
+            if !self.try_push(event) {
+                break;
+            }
+            accepted += 1;
         }
-
-        unsafe {
-            (*slot.value.get()).write(event);
-        }
-        slot.seq.store(pos.wrapping_add(1), Ordering::Release);
-        self.enqueue_pos
-            .store(pos.wrapping_add(1), Ordering::Relaxed);
-        true
+        accepted
     }
 
     /// ### English
@@ -353,6 +425,54 @@ impl InputEventQueue {
         self.enqueue_pos
             .store(head.wrapping_add(1), Ordering::Release);
         true
+    }
+
+    #[inline]
+    fn try_push_slice_spsc(&self, events: &[XianWebEngineInputEvent]) -> usize {
+        debug_assert!(self.single_producer);
+
+        let head = self.enqueue_pos.load(Ordering::Relaxed);
+        let cached_tail = unsafe { *self.producer_cached_dequeue.get() };
+
+        let mut tail = cached_tail;
+        let mut used = head.wrapping_sub(tail);
+        if used >= INPUT_QUEUE_CAPACITY {
+            tail = self.dequeue_pos.load(Ordering::Acquire);
+            unsafe {
+                *self.producer_cached_dequeue.get() = tail;
+            }
+            used = head.wrapping_sub(tail);
+            if used >= INPUT_QUEUE_CAPACITY {
+                return 0;
+            }
+        }
+
+        let mut free = INPUT_QUEUE_CAPACITY - used;
+        if free < events.len() {
+            let fresh_tail = self.dequeue_pos.load(Ordering::Acquire);
+            if fresh_tail != tail {
+                unsafe {
+                    *self.producer_cached_dequeue.get() = fresh_tail;
+                }
+                tail = fresh_tail;
+                used = head.wrapping_sub(tail);
+                if used >= INPUT_QUEUE_CAPACITY {
+                    return 0;
+                }
+                free = INPUT_QUEUE_CAPACITY - used;
+            }
+        }
+
+        let accepted = events.len().min(free);
+        for (offset, &event) in events.iter().take(accepted).enumerate() {
+            let slot = &self.slots[head.wrapping_add(offset) & INPUT_QUEUE_MASK];
+            unsafe {
+                (*slot.value.get()).write(event);
+            }
+        }
+        self.enqueue_pos
+            .store(head.wrapping_add(accepted), Ordering::Release);
+        accepted
     }
 
     #[inline]
