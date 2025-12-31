@@ -1,11 +1,10 @@
-//! ### English
-//! Bitflags controlling optional view behaviors.
-//! These are passed through the C ABI as a `u32` bitmask.
-//!
-//! ### 中文
-//! 控制 view 可选行为的位标志（bitflags）。
-//! 通过 C ABI 以 `u32` 位掩码传入。
-
+/// ### English
+/// Bitflags controlling optional view behaviors.
+/// These are passed through the C ABI as a `u32` bitmask.
+///
+/// ### 中文
+/// 控制 view 可选行为的位标志（bitflags）。
+/// 通过 C ABI 以 `u32` 位掩码传入。
 /// ### English
 /// Unsafe mode: skip Java-side consumer fences (fastest but may overwrite textures still in use).
 ///

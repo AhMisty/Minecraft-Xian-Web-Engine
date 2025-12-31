@@ -1,11 +1,10 @@
-//! ### English
-//! Resource reader integration for Servo.
-//! Allows configuring a directory-based `ResourceReader` from the embedder side.
-//!
-//! ### 中文
-//! Servo 的资源读取器集成。
-//! 允许宿主侧配置基于目录的 `ResourceReader`。
-
+/// ### English
+/// Resource reader integration for Servo.
+/// Allows configuring a directory-based `ResourceReader` from the embedder side.
+///
+/// ### 中文
+/// Servo 的资源读取器集成。
+/// 允许宿主侧配置基于目录的 `ResourceReader`。
 use std::path::PathBuf;
 
 /// ### English

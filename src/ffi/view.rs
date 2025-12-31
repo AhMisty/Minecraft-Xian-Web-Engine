@@ -26,11 +26,7 @@ pub unsafe extern "C" fn xian_web_engine_view_create(
     }
 
     let size = PhysicalSize::new(width, height);
-    let handle = unsafe {
-        (*engine)
-            .runtime
-            .create_view(size, target_fps, view_flags)
-    };
+    let handle = unsafe { (*engine).runtime.create_view(size, target_fps, view_flags) };
     let Ok(handle) = handle else {
         return std::ptr::null_mut();
     };
@@ -69,7 +65,10 @@ pub unsafe extern "C" fn xian_web_engine_view_set_active(view: *mut XianWebEngin
         return;
     }
 
-    unsafe { (*view).handle.set_active(active != 0) };
+    let handle = unsafe { &(*view).handle };
+    if handle.set_active(active != 0) {
+        handle.wake();
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -94,12 +93,11 @@ pub unsafe extern "C" fn xian_web_engine_view_load_url(
         Ok(s) => s,
         Err(_) => return false,
     };
-    let parsed_url = match url::Url::parse(url_str) {
-        Ok(u) => u,
-        Err(_) => return false,
-    };
 
-    unsafe { (*view).handle.load_url(parsed_url) };
+    let handle = unsafe { &(*view).handle };
+    if handle.load_url(url_str) {
+        handle.wake();
+    }
     true
 }
 

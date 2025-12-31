@@ -1,12 +1,11 @@
-//! ### English
-//! Shared GLFW OpenGL context wrapper.
-//! Creates an offscreen shared context so the Servo thread can render into textures that the
-//! Java/GLFW context can sample.
-//!
-//! ### 中文
-//! 共享 GLFW OpenGL 上下文封装。
-//! 创建离屏共享上下文，使 Servo 线程能渲染到纹理，供 Java/GLFW 上下文采样。
-
+/// ### English
+/// Shared GLFW OpenGL context wrapper.
+/// Creates an offscreen shared context so the Servo thread can render into textures that the
+/// Java/GLFW context can sample.
+///
+/// ### 中文
+/// 共享 GLFW OpenGL 上下文封装。
+/// 创建离屏共享上下文，使 Servo 线程能渲染到纹理，供 Java/GLFW 上下文采样。
 use std::cell::Cell;
 use std::ffi::{CString, c_void};
 use std::rc::Rc;
@@ -19,7 +18,11 @@ use surfman::Connection;
 use crate::engine::glfw;
 
 fn parse_gl_version(version: &str) -> (u32, u32) {
-    // Expected forms: "4.6.0 ..." or "OpenGL ES 3.2 ..."
+    /// ### English
+    /// Expected forms: `"4.6.0 ..."` or `"OpenGL ES 3.2 ..."`.
+    ///
+    /// ### 中文
+    /// 期望的版本字符串形式：`"4.6.0 ..."` 或 `"OpenGL ES 3.2 ..."`。
     let mut major = 0u32;
     let mut minor = 0u32;
     let tokens: Vec<&str> = version.split_whitespace().collect();
@@ -41,13 +44,11 @@ fn parse_gl_version(version: &str) -> (u32, u32) {
     (major, minor)
 }
 
-/*
-### English
-Per-thread "current GLFW window" cache to avoid redundant `makeCurrent` calls.
-
-### 中文
-每线程缓存“当前 GLFW window”，避免重复 `makeCurrent` 调用。
-*/
+/// ### English
+/// Per-thread "current GLFW window" cache to avoid redundant `makeCurrent` calls.
+///
+/// ### 中文
+/// 每线程缓存“当前 GLFW window”，避免重复 `makeCurrent` 调用。
 thread_local! {
     static CURRENT_GLFW_WINDOW: Cell<glfw::GlfwWindowPtr> =
         const { Cell::new(std::ptr::null_mut()) };
@@ -126,7 +127,11 @@ impl GlfwSharedContext {
         let gl_version = unsafe { glow.get_parameter_string(glow::VERSION) };
         let is_gles = gl_version.starts_with("OpenGL ES");
         let (major, minor) = parse_gl_version(&gl_version);
-        // Desktop GL: sRGB is core since 3.0; GLES since 3.0. Assume supported for newer versions.
+        /// ### English
+        /// Desktop GL: sRGB is core since 3.0; GLES since 3.0. Assume supported for newer versions.
+        ///
+        /// ### 中文
+        /// Desktop GL：sRGB 从 3.0 起为核心特性；GLES：sRGB 从 3.0 起为核心特性。对更高版本直接假设可用。
         let srgb_supported = if is_gles {
             major >= 3
         } else {
@@ -216,13 +221,11 @@ impl GlfwSharedContext {
 }
 
 impl Drop for GlfwSharedContext {
-    /*
-    ### English
-    Ensures the offscreen window/context is destroyed on drop.
-
-    ### 中文
-    Drop 时销毁离屏 window/context。
-    */
+    /// ### English
+    /// Ensures the offscreen window/context is destroyed on drop.
+    ///
+    /// ### 中文
+    /// Drop 时销毁离屏 window/context。
     fn drop(&mut self) {
         unsafe {
             self.glfw.make_current(std::ptr::null_mut());

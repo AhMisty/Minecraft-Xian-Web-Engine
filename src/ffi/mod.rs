@@ -1,15 +1,14 @@
-//! ### English
-//! C ABI surface for `xian_web_engine`.
-//! All exported symbols are `extern "C"` functions; structs are `#[repr(C)]`.
-//! Strings passed from Java/Panama must be NUL-terminated UTF-8 (C string); they will be
-//! validated as UTF-8 and will be truncated at the first NUL byte.
-//!
-//! ### 中文
-//! `xian_web_engine` 的 C ABI 接口层。
-//! 所有导出符号均为 `extern "C"` 函数；结构体使用 `#[repr(C)]`。
-//! Java/Panama 传入的字符串必须是以 NUL 结尾的 UTF-8（C 字符串）；Rust 会校验 UTF-8，
-//! 且在遇到第一个 NUL 字节处截断。
-
+/// ### English
+/// C ABI surface for `xian_web_engine`.
+/// All exported symbols are `extern "C"` functions; structs are `#[repr(C)]`.
+/// Strings passed from Java/Panama must be NUL-terminated UTF-8 (C string); they will be
+/// validated as UTF-8 and will be truncated at the first NUL byte.
+///
+/// ### 中文
+/// `xian_web_engine` 的 C ABI 接口层。
+/// 所有导出符号均为 `extern "C"` 函数；结构体使用 `#[repr(C)]`。
+/// Java/Panama 传入的字符串必须是以 NUL 结尾的 UTF-8（C 字符串）；Rust 会校验 UTF-8，
+/// 且在遇到第一个 NUL 字节处截断。
 mod abi;
 mod engine;
 mod frame;

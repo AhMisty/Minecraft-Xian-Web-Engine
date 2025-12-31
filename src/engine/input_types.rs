@@ -1,11 +1,10 @@
-//! ### English
-//! C ABI input event types.
-//! Kept as POD (plain-old-data) so Java/Panama can pass arrays efficiently.
-//!
-//! ### 中文
-//! C ABI 输入事件类型。
-//! 保持为 POD（纯数据结构），方便 Java/Panama 高效传递数组。
-
+/// ### English
+/// C ABI input event types.
+/// Kept as POD (plain-old-data) so Java/Panama can pass arrays efficiently.
+///
+/// ### 中文
+/// C ABI 输入事件类型。
+/// 保持为 POD（纯数据结构），方便 Java/Panama 高效传递数组。
 /// ### English
 /// One input event in a single struct.
 /// All fields are numeric to avoid UTF-8 parsing / allocation on the Rust hot path.

@@ -33,12 +33,9 @@ pub extern "C" fn xian_web_engine_create(
     let resources_dir = unsafe { super::cstr_to_path(resources_dir) };
     let config_dir = unsafe { super::cstr_to_path(config_dir) };
 
-    let Ok(runtime) = EngineRuntime::new(
-        glfw_shared_window,
-        default_size,
-        resources_dir,
-        config_dir,
-    ) else {
+    let Ok(runtime) =
+        EngineRuntime::new(glfw_shared_window, default_size, resources_dir, config_dir)
+    else {
         return std::ptr::null_mut();
     };
 

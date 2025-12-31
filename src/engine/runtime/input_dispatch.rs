@@ -1,9 +1,8 @@
-//! ### English
-//! Translation from ABI input events to Servo input events.
-//!
-//! ### 中文
-//! ABI 输入事件到 Servo 输入事件的转换与派发。
-
+/// ### English
+/// Translation from ABI input events to Servo input events.
+///
+/// ### 中文
+/// ABI 输入事件到 Servo 输入事件的转换与派发。
 use crate::engine::input_types::{
     XIAN_WEB_ENGINE_INPUT_KIND_KEY, XIAN_WEB_ENGINE_INPUT_KIND_MOUSE_BUTTON,
     XIAN_WEB_ENGINE_INPUT_KIND_WHEEL, XianWebEngineInputEvent,

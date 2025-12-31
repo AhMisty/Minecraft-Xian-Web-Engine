@@ -1,2 +1,4 @@
 /target
 /Cargo.lock
+/rust_out.exe
+/rust_out.pdb

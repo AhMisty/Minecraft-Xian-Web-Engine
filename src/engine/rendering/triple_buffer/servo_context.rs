@@ -33,13 +33,11 @@ impl servo::RenderingContext for GlfwTripleBufferRenderingContext {
         let back_slot = self.back_slot.get();
         let mut slots = self.slots.borrow_mut();
 
-        /*
-        ### English
-        Always resize the back slot; the producer thread owns it.
-
-        ### 中文
-        总是先 resize back 槽位；生产者线程拥有它的独占写权限。
-        */
+        /// ### English
+        /// Always resize the back slot; the producer thread owns it.
+        ///
+        /// ### 中文
+        /// 总是先 resize back 槽位；生产者线程拥有它的独占写权限。
         self.gl
             .bind_renderbuffer(gl::RENDERBUFFER, self.depth_stencil_rb);
         self.gl.renderbuffer_storage(
@@ -89,7 +87,11 @@ impl servo::RenderingContext for GlfwTripleBufferRenderingContext {
     }
 
     fn prepare_for_rendering(&self) {
-        // Enable/disable sRGB write only when the state changes to avoid redundant driver calls.
+        /// ### English
+        /// Enable/disable sRGB writes only when the state changes to avoid redundant driver calls.
+        ///
+        /// ### 中文
+        /// 仅在状态发生变化时才启用/禁用 sRGB 写入，避免重复的驱动调用。
         if self.use_srgb {
             if !self.srgb_enabled.replace(true) {
                 self.gl.enable(gl::FRAMEBUFFER_SRGB);
@@ -112,13 +114,11 @@ impl servo::RenderingContext for GlfwTripleBufferRenderingContext {
             return;
         };
 
-        /*
-        ### English
-        Optionally insert a producer fence for the consumer thread.
-
-        ### 中文
-        可选地为消费者线程插入生产者 fence。
-        */
+        /// ### English
+        /// Optionally insert a producer fence for the consumer thread.
+        ///
+        /// ### 中文
+        /// 可选地为消费者线程插入生产者 fence。
         let sync_value = if self.unsafe_no_producer_fence {
             0
         } else {

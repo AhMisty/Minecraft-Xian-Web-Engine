@@ -5,7 +5,6 @@ edition = "2024"
 
 [dependencies]
 servo = { git = "https://github.com/servo/servo", package = "libservo" }
-crossbeam-channel = "0.5"
 dpi = "0.1"
 gleam = "0.15"
 glow = "0.16.0"

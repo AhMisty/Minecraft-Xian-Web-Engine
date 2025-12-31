@@ -115,6 +115,10 @@ pub unsafe extern "C" fn xian_web_engine_views_release_frames(
             continue;
         }
 
-        unsafe { (*view).handle.release_slot_with_fence(slot_values[i], consumer_fence_values[i]) };
+        unsafe {
+            (*view)
+                .handle
+                .release_slot_with_fence(slot_values[i], consumer_fence_values[i])
+        };
     }
 }
