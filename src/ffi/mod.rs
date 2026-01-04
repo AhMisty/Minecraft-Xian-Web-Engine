@@ -139,7 +139,7 @@ pub struct XianWebEngineFrame {
 ///
 /// ### 中文
 /// `xian_web_engine` 的 C ABI 版本号。
-const XIAN_WEB_ENGINE_ABI_VERSION: u32 = 2;
+const XIAN_WEB_ENGINE_ABI_VERSION: u32 = 1;
 
 impl From<AcquiredFrame> for XianWebEngineFrame {
     /// ### English
