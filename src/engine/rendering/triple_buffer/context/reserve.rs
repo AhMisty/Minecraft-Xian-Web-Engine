@@ -3,6 +3,15 @@ use crate::engine::frame::{SLOT_FREE, SLOT_READY, SLOT_RENDERING, TRIPLE_BUFFER_
 use super::GlfwTripleBufferRenderingContext;
 
 impl GlfwTripleBufferRenderingContext {
+    #[inline]
+    fn prepare_slot_for_rendering(&self, slot: usize) {
+        self.delete_producer_fence_if_any(slot);
+        if !self.unsafe_no_consumer_fence {
+            self.delete_consumer_fence_if_any(slot);
+        }
+        self.ensure_slot_size(slot);
+    }
+
     pub(in crate::engine::rendering::triple_buffer) fn ensure_slot_size(&self, slot: usize) {
         if slot >= TRIPLE_BUFFER_COUNT {
             return;
@@ -28,42 +37,19 @@ impl GlfwTripleBufferRenderingContext {
         let slot_a = (current_back + 1) % TRIPLE_BUFFER_COUNT;
         let slot_b = (current_back + 2) % TRIPLE_BUFFER_COUNT;
 
-        /// ### English
-        /// Fast path: most of the time, triple-buffering will have at least one FREE slot.
-        ///
-        /// ### 中文
-        /// 快路径：大多数情况下三缓冲至少会有一个 FREE 槽位。
-        if self
-            .shared
-            .compare_exchange_state_relaxed(slot_a, SLOT_FREE, SLOT_RENDERING)
-        {
-            self.delete_producer_fence_if_any(slot_a);
-            if !self.unsafe_no_consumer_fence {
-                self.delete_consumer_fence_if_any(slot_a);
+        // 快路径：大多数情况下三缓冲至少会有一个 FREE 槽位。
+        for slot in [slot_a, slot_b] {
+            if self
+                .shared
+                .compare_exchange_state_relaxed(slot, SLOT_FREE, SLOT_RENDERING)
+            {
+                self.prepare_slot_for_rendering(slot);
+                return Some(slot);
             }
-            self.ensure_slot_size(slot_a);
-            return Some(slot_a);
         }
 
-        if self
-            .shared
-            .compare_exchange_state_relaxed(slot_b, SLOT_FREE, SLOT_RENDERING)
-        {
-            self.delete_producer_fence_if_any(slot_b);
-            if !self.unsafe_no_consumer_fence {
-                self.delete_consumer_fence_if_any(slot_b);
-            }
-            self.ensure_slot_size(slot_b);
-            return Some(slot_b);
-        }
-
-        /// ### English
-        /// No FREE slots; steal a READY slot.
-        /// Prefer stealing the oldest READY slot so the newest stays available to the consumer thread.
-        ///
-        /// ### 中文
-        /// 没有 FREE 槽位；抢占一个 READY 槽位。
-        /// 优先抢占最旧的 READY，避免把最新帧从消费者手里抢走。
+        // 没有 FREE 槽位；抢占一个 READY 槽位。
+        // 优先抢占最旧的 READY，避免把最新帧从消费者手里抢走。
         let state_a = self.shared.slot_state_relaxed(slot_a);
         let state_b = self.shared.slot_state_relaxed(slot_b);
 
@@ -92,45 +78,24 @@ impl GlfwTripleBufferRenderingContext {
                 .shared
                 .compare_exchange_state_relaxed(slot, SLOT_READY, SLOT_RENDERING)
             {
-                self.delete_producer_fence_if_any(slot);
-                if !self.unsafe_no_consumer_fence {
-                    self.delete_consumer_fence_if_any(slot);
-                }
-                self.ensure_slot_size(slot);
+                self.prepare_slot_for_rendering(slot);
                 return Some(slot);
             }
         }
 
-        /// ### English
-        /// No FREE/READY slots.
-        /// In safe mode, try to reclaim RELEASE_PENDING slots by polling consumer fences (non-blocking).
-        /// Only do this on the slow path to avoid an extra GL sync query on every frame.
-        ///
-        /// ### 中文
-        /// 没有 FREE/READY 槽位。
-        /// 安全模式下通过轮询 consumer fence（非阻塞）回收 RELEASE_PENDING 槽位。
-        /// 仅在慢路径执行，避免每帧额外的 GL 同步查询。
+        // 没有 FREE/READY 槽位。
+        // 安全模式下通过轮询 consumer fence（非阻塞）回收 RELEASE_PENDING 槽位；仅在慢路径执行，避免每帧额外的 GL 同步查询。
         if !self.unsafe_no_consumer_fence {
             self.reclaim_release_pending_slots();
 
-            if self
-                .shared
-                .compare_exchange_state_relaxed(slot_a, SLOT_FREE, SLOT_RENDERING)
-            {
-                self.delete_producer_fence_if_any(slot_a);
-                self.delete_consumer_fence_if_any(slot_a);
-                self.ensure_slot_size(slot_a);
-                return Some(slot_a);
-            }
-
-            if self
-                .shared
-                .compare_exchange_state_relaxed(slot_b, SLOT_FREE, SLOT_RENDERING)
-            {
-                self.delete_producer_fence_if_any(slot_b);
-                self.delete_consumer_fence_if_any(slot_b);
-                self.ensure_slot_size(slot_b);
-                return Some(slot_b);
+            for slot in [slot_a, slot_b] {
+                if self
+                    .shared
+                    .compare_exchange_state_relaxed(slot, SLOT_FREE, SLOT_RENDERING)
+                {
+                    self.prepare_slot_for_rendering(slot);
+                    return Some(slot);
+                }
             }
         }
 

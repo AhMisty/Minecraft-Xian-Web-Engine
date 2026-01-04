@@ -140,23 +140,6 @@ impl InputEventQueue {
     }
 
     /// ### English
-    /// Tries to push one input event.
-    ///
-    /// Returns `true` on success; returns `false` if the queue is full.
-    ///
-    /// ### 中文
-    /// 尝试 push 一个输入事件。
-    ///
-    /// 成功返回 `true`；队列已满返回 `false`。
-    pub fn try_push(&self, event: XianWebEngineInputEvent) -> bool {
-        if self.single_producer {
-            return self.try_push_spsc(event);
-        }
-
-        self.try_push_mpsc(event)
-    }
-
-    /// ### English
     /// Pops one queued input event (single consumer / Servo thread).
     ///
     /// ### 中文
@@ -189,7 +172,7 @@ impl InputEventQueue {
 
         let mut accepted = 0usize;
         for &event in events {
-            if self.try_push(event) {
+            if self.try_push_mpsc(event) {
                 accepted += 1;
             } else {
                 break;

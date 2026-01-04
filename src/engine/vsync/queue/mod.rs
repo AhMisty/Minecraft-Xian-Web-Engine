@@ -113,11 +113,7 @@ impl VsyncCallbackQueue {
             });
         }
 
-        /// ### English
-        /// Preallocate a small pool of overflow nodes so the cold path avoids `Box::new` under load.
-        ///
-        /// ### 中文
-        /// 预分配一小批 overflow 节点，避免在压力下冷路径触发 `Box::new` 分配。
+        // 预分配一小批 overflow 节点，避免在压力下冷路径触发 `Box::new` 分配。
         let mut free_head: *mut VsyncCallbackNode = ptr::null_mut();
         let prealloc = VSYNC_OVERFLOW_NODE_PREALLOC.min(capacity);
         for _ in 0..prealloc {
@@ -200,11 +196,7 @@ impl VsyncCallbackQueue {
 
         let overflow = self.callbacks.swap(ptr::null_mut(), Ordering::AcqRel);
 
-        /// ### English
-        /// Drain ring buffer up to the snapshot head so callbacks enqueued during tick run next tick.
-        ///
-        /// ### 中文
-        /// 仅 drain 到本次 tick 的 head 快照，tick 期间新入队的回调留到下一次 tick。
+        // 仅 drain 到本次 tick 的 head 快照，tick 期间新入队的回调留到下一次 tick。
         let mut tail = tail;
         while tail != head_snapshot {
             let idx = tail & self.mask;
@@ -220,11 +212,7 @@ impl VsyncCallbackQueue {
 
 impl Drop for VsyncCallbackQueue {
     fn drop(&mut self) {
-        /// ### English
-        /// Drop any callbacks still queued in the ring buffer.
-        ///
-        /// ### 中文
-        /// Drop 时释放 ring buffer 中仍未执行的回调。
+        // Drop 时释放 ring buffer 中仍未执行的回调。
         let head = self.head.load(Ordering::Relaxed);
         let mut tail = self.tail.load(Ordering::Relaxed);
         while tail != head {

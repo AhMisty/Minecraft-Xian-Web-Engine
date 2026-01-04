@@ -1,6 +1,7 @@
 use std::ffi::OsStr;
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::os::windows::ffi::OsStrExt as _;
+use std::sync::OnceLock;
 
 #[repr(C)]
 pub struct GLFWwindow {
@@ -46,6 +47,62 @@ unsafe fn get_symbol<T>(module: *mut c_void, name: &CStr) -> Option<T> {
     Some(unsafe { std::mem::transmute_copy(&addr) })
 }
 
+static EMBEDDER_GLFW_API: OnceLock<GlfwApi> = OnceLock::new();
+
+pub(super) fn install_embedder_glfw_api(api: super::EmbedderGlfwApi) -> Result<(), String> {
+    if api.glfw_get_proc_address == 0 {
+        return Err("EmbedderGlfwApi.glfw_get_proc_address is NULL".to_string());
+    }
+    if api.glfw_make_context_current == 0 {
+        return Err("EmbedderGlfwApi.glfw_make_context_current is NULL".to_string());
+    }
+    if api.glfw_default_window_hints == 0 {
+        return Err("EmbedderGlfwApi.glfw_default_window_hints is NULL".to_string());
+    }
+    if api.glfw_window_hint == 0 {
+        return Err("EmbedderGlfwApi.glfw_window_hint is NULL".to_string());
+    }
+    if api.glfw_get_window_attrib == 0 {
+        return Err("EmbedderGlfwApi.glfw_get_window_attrib is NULL".to_string());
+    }
+    if api.glfw_create_window == 0 {
+        return Err("EmbedderGlfwApi.glfw_create_window is NULL".to_string());
+    }
+    if api.glfw_destroy_window == 0 {
+        return Err("EmbedderGlfwApi.glfw_destroy_window is NULL".to_string());
+    }
+
+    let table = GlfwApi {
+        glfw_get_proc_address: unsafe {
+            std::mem::transmute::<usize, GlfwGetProcAddress>(api.glfw_get_proc_address)
+        },
+        glfw_make_context_current: unsafe {
+            std::mem::transmute::<usize, GlfwMakeContextCurrent>(api.glfw_make_context_current)
+        },
+        glfw_default_window_hints: unsafe {
+            std::mem::transmute::<usize, GlfwDefaultWindowHints>(api.glfw_default_window_hints)
+        },
+        glfw_window_hint: unsafe {
+            std::mem::transmute::<usize, GlfwWindowHint>(api.glfw_window_hint)
+        },
+        glfw_get_window_attrib: unsafe {
+            std::mem::transmute::<usize, GlfwGetWindowAttrib>(api.glfw_get_window_attrib)
+        },
+        glfw_create_window: unsafe {
+            std::mem::transmute::<usize, GlfwCreateWindow>(api.glfw_create_window)
+        },
+        glfw_destroy_window: unsafe {
+            std::mem::transmute::<usize, GlfwDestroyWindow>(api.glfw_destroy_window)
+        },
+    };
+
+    EMBEDDER_GLFW_API
+        .set(table)
+        .map_err(|_| "Embedder GLFW API is already installed".to_string())?;
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
 pub struct GlfwApi {
     /// ### English
     /// Function pointer: `glfwGetProcAddress`.
@@ -95,14 +152,23 @@ impl GlfwApi {
     /// ### English
     /// Loads the minimal subset of GLFW symbols required by this crate.
     ///
+    /// If an embedder-provided function table was installed via
+    /// `xian_web_engine_set_glfw_api`, it is used preferentially.
+    ///
     /// The embedder is expected to have already loaded GLFW; we try common DLL names and
     /// fall back to `LoadLibraryW`.
     ///
     /// ### 中文
     /// 加载本 crate 所需的最小 GLFW 符号集合。
     ///
+    /// 如果宿主通过 `xian_web_engine_set_glfw_api` 安装了函数表，则会优先使用该表。
+    ///
     /// 宿主通常已加载 GLFW；这里会尝试常见 DLL 名称，并在需要时回退到 `LoadLibraryW`。
     pub fn load() -> Result<Self, String> {
+        if let Some(api) = EMBEDDER_GLFW_API.get() {
+            return Ok(*api);
+        }
+
         let module = unsafe {
             let glfw3 = to_wide_nul("glfw3.dll");
             let glfw = to_wide_nul("glfw.dll");
@@ -119,7 +185,7 @@ impl GlfwApi {
             }
             if module.is_null() {
                 return Err(
-                    "Failed to load glfw3.dll/glfw.dll; ensure GLFW is loaded by the embedder"
+                    "Failed to load glfw3.dll/glfw.dll; ensure GLFW is loaded by the embedder (or install an embedder function table via xian_web_engine_set_glfw_api)"
                         .to_string(),
                 );
             }

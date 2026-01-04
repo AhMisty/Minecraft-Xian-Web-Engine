@@ -55,11 +55,7 @@ pub(super) fn run_servo_thread(
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     }
 
-    /// ### English
-    /// Optional resource/config directories.
-    ///
-    /// ### 中文
-    /// 可选的资源/配置目录。
+    // 可选的资源/配置目录。
     if let Some(resources_dir) = resources_dir {
         resources::set_resources_dir(resources_dir);
     }
@@ -67,11 +63,7 @@ pub(super) fn run_servo_thread(
         let _ = std::fs::create_dir_all(config_dir);
     }
 
-    /// ### English
-    /// Coalesced wake flag to avoid unpark storms.
-    ///
-    /// ### 中文
-    /// 合并唤醒标记，避免频繁 unpark 的风暴。
+    // 合并唤醒标记，避免频繁 unpark 的风暴。
     let wake_pending = Arc::new(AtomicBool::new(false));
 
     #[derive(Clone)]
@@ -107,11 +99,7 @@ pub(super) fn run_servo_thread(
         pending: wake_pending.clone(),
     });
 
-    /// ### English
-    /// Servo opts/preferences chosen for low overhead in an embedder.
-    ///
-    /// ### 中文
-    /// 为宿主嵌入场景选择的 Servo 参数/偏好设置（低开销优先）。
+    // 为宿主嵌入场景选择的 Servo 参数/偏好设置（低开销优先）。
     let opts = servo::Opts {
         multiprocess: false,
         force_ipc: false,
@@ -141,11 +129,7 @@ pub(super) fn run_servo_thread(
         .event_loop_waker(waker)
         .build();
 
-    /// ### English
-    /// Create a shared offscreen GLFW window/context that shares objects with Java's context.
-    ///
-    /// ### 中文
-    /// 创建一个离屏 GLFW window/context，与 Java 的上下文共享 GL 对象。
+    // 创建一个离屏 GLFW window/context，与 Java 的上下文共享 GL 对象。
     let glfw_shared_window_ptr = glfw_shared_window_handle as *mut c_void;
     let shared_ctx = match GlfwSharedContext::new(glfw_shared_window_ptr) {
         Ok(ctx) => ctx,
@@ -164,11 +148,7 @@ pub(super) fn run_servo_thread(
     let mut refresh_scheduler: Option<Arc<RefreshScheduler>> = None;
 
     loop {
-        /// ### English
-        /// 1) Drain control commands from embedder threads.
-        ///
-        /// ### 中文
-        /// 1) Drain 来自宿主线程的控制命令。
+        // 1) Drain 来自宿主线程的控制命令。
         if commands::drain_commands(
             &servo,
             &shared_ctx,
@@ -183,11 +163,7 @@ pub(super) fn run_servo_thread(
             return;
         }
 
-        /// ### English
-        /// 2) Drain per-view pending work (coalesced).
-        ///
-        /// ### 中文
-        /// 2) drain 每 view 的 pending work（合并处理）。
+        // 2) Drain 每 view 的 pending work（合并处理）。
         while let Some(id) = pending_queue.pop() {
             let Some(entry) = views.get_mut(id as usize).and_then(Option::as_mut) else {
                 continue;
@@ -201,27 +177,15 @@ pub(super) fn run_servo_thread(
             }
         }
 
-        /// ### English
-        /// 3) Let Servo do its internal work (timers/layout/script/painting scheduling).
-        ///
-        /// ### 中文
-        /// 3) 让 Servo 执行内部任务（计时器/布局/脚本/绘制调度）。
+        // 3) 让 Servo 执行内部任务（计时器/布局/脚本/绘制调度）。
         servo.spin_event_loop();
 
-        /// ### English
-        /// 4) If anything woke us while spinning, continue without parking.
-        ///
-        /// ### 中文
-        /// 4) 如果 spin 期间发生唤醒，则不 park 直接继续循环。
+        // 4) 如果 spin 期间发生唤醒，则不 park 直接继续循环。
         if wake_pending.swap(false, Ordering::Relaxed) {
             continue;
         }
 
-        /// ### English
-        /// 5) Park until an embedder command or waker unpark arrives.
-        ///
-        /// ### 中文
-        /// 5) park 等待宿主命令或 waker 的 unpark。
+        // 5) Park 等待宿主命令或 waker 的 unpark。
         thread::park();
     }
 }

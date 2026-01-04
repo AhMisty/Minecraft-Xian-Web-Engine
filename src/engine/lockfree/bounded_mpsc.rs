@@ -81,9 +81,9 @@ impl<T> BoundedMpscQueue<T> {
         loop {
             let slot = &self.slots[pos & self.mask];
             let seq = slot.seq.load(Ordering::Acquire);
-            let dif = seq as isize - pos as isize;
+            let diff = seq as isize - pos as isize;
 
-            if dif == 0 {
+            if diff == 0 {
                 match self.enqueue_pos.compare_exchange_weak(
                     pos,
                     pos.wrapping_add(1),
@@ -99,7 +99,7 @@ impl<T> BoundedMpscQueue<T> {
                     }
                     Err(updated) => pos = updated,
                 }
-            } else if dif < 0 {
+            } else if diff < 0 {
                 return Err(value);
             } else {
                 pos = self.enqueue_pos.load(Ordering::Relaxed);
@@ -116,9 +116,9 @@ impl<T> BoundedMpscQueue<T> {
         let pos = self.dequeue_pos.load(Ordering::Relaxed);
         let slot = &self.slots[pos & self.mask];
         let seq = slot.seq.load(Ordering::Acquire);
-        let dif = seq as isize - pos.wrapping_add(1) as isize;
+        let diff = seq as isize - pos.wrapping_add(1) as isize;
 
-        if dif != 0 {
+        if diff != 0 {
             return None;
         }
 

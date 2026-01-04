@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use crate::engine::frame::{SLOT_RENDERING, TRIPLE_BUFFER_COUNT};
 use crate::engine::refresh::{FixedIntervalRefreshDriver, VsyncRefreshDriver};
-use gleam::gl::{self};
+use gleam::gl;
 
 use super::super::slot::TripleBufferSlot;
 use super::{GlfwTripleBufferContextInit, GlfwTripleBufferRenderingContext};

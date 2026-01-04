@@ -1,5 +1,3 @@
-#![allow(unused_doc_comments)]
-
 /// ### English
 /// `xian_web_engine` cdylib crate root.
 /// Exposes the C ABI via `ffi`; core implementation lives under `engine`.

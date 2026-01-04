@@ -40,13 +40,8 @@ impl SharedFrameState {
             return Some(self.acquired_frame(front));
         }
 
-        /// ### English
-        /// Fallback: acquire any READY slot, preferring the newest sequence.
-        /// (TRIPLE_BUFFER_COUNT is fixed to 3 for maximum performance / simpler branching.)
-        ///
-        /// ### 中文
-        /// 回退路径：获取任意 READY 槽位，并优先选择 frame_seq 最新的那个。
-        /// （TRIPLE_BUFFER_COUNT 固定为 3，以最大化性能并简化分支。）
+        // 回退：获取任意 READY 槽位，并优先选择 frame_seq 最新的那个。
+        // TRIPLE_BUFFER_COUNT 固定为 3，以最大化性能并简化分支。
         debug_assert_eq!(TRIPLE_BUFFER_COUNT, 3);
         let slot_a = (front + 1) % TRIPLE_BUFFER_COUNT;
         let slot_b = (front + 2) % TRIPLE_BUFFER_COUNT;

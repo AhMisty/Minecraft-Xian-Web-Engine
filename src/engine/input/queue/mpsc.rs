@@ -15,9 +15,9 @@ impl InputEventQueue {
         loop {
             let slot = &self.slots[pos & INPUT_QUEUE_MASK];
             let seq = slot.seq.load(Ordering::Acquire);
-            let dif = seq as isize - pos as isize;
+            let diff = seq as isize - pos as isize;
 
-            if dif == 0 {
+            if diff == 0 {
                 match self.enqueue_pos.compare_exchange_weak(
                     pos,
                     pos.wrapping_add(1),
@@ -33,7 +33,7 @@ impl InputEventQueue {
                     }
                     Err(updated) => pos = updated,
                 }
-            } else if dif < 0 {
+            } else if diff < 0 {
                 return false;
             } else {
                 pos = self.enqueue_pos.load(Ordering::Relaxed);
@@ -50,9 +50,9 @@ impl InputEventQueue {
         let pos = self.dequeue_pos.load(Ordering::Relaxed);
         let slot = &self.slots[pos & INPUT_QUEUE_MASK];
         let seq = slot.seq.load(Ordering::Acquire);
-        let dif = seq as isize - pos.wrapping_add(1) as isize;
+        let diff = seq as isize - pos.wrapping_add(1) as isize;
 
-        if dif != 0 {
+        if diff != 0 {
             return None;
         }
 

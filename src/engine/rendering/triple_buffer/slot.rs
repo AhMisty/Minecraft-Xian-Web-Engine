@@ -132,11 +132,7 @@ impl TripleBufferSlot {
             gl::UNSIGNED_BYTE,
         );
 
-        /// ### English
-        /// Flip image vertically (texture coordinate origin differs).
-        ///
-        /// ### 中文
-        /// 垂直翻转图像（纹理坐标原点方向不同）。
+        // 垂直翻转图像（纹理坐标原点方向不同）。
         let source_rectangle = source_rectangle.to_usize();
         let stride = source_rectangle.width() * 4;
         let height = source_rectangle.height();

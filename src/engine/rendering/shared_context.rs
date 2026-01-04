@@ -18,21 +18,15 @@ use surfman::Connection;
 use crate::engine::glfw;
 
 fn parse_gl_version(version: &str) -> (u32, u32) {
-    /// ### English
-    /// Expected forms: `"4.6.0 ..."` or `"OpenGL ES 3.2 ..."`.
-    ///
-    /// ### 中文
-    /// 期望的版本字符串形式：`"4.6.0 ..."` 或 `"OpenGL ES 3.2 ..."`。
+    // 期望的版本字符串形式：`"4.6.0 ..."` 或 `"OpenGL ES 3.2 ..."`。
     let mut major = 0u32;
     let mut minor = 0u32;
-    let tokens: Vec<&str> = version.split_whitespace().collect();
-    let number_token = tokens.iter().find(|t| {
-        t.chars()
-            .next()
-            .map(|c| c.is_ascii_digit())
-            .unwrap_or(false)
-    });
-    if let Some(token) = number_token {
+    if let Some(token) = version.split_whitespace().find(|t| {
+        t.as_bytes()
+            .first()
+            .copied()
+            .is_some_and(|b| b.is_ascii_digit())
+    }) {
         let mut parts = token.split('.');
         if let Some(m) = parts.next().and_then(|s| s.parse::<u32>().ok()) {
             major = m;
@@ -44,11 +38,7 @@ fn parse_gl_version(version: &str) -> (u32, u32) {
     (major, minor)
 }
 
-/// ### English
-/// Per-thread "current GLFW window" cache to avoid redundant `makeCurrent` calls.
-///
-/// ### 中文
-/// 每线程缓存“当前 GLFW window”，避免重复 `makeCurrent` 调用。
+// 每线程缓存“当前 GLFW window”，避免重复 `makeCurrent` 调用。
 thread_local! {
     static CURRENT_GLFW_WINDOW: Cell<glfw::GlfwWindowPtr> =
         const { Cell::new(std::ptr::null_mut()) };
@@ -108,7 +98,7 @@ impl GlfwSharedContext {
     /// 必须在将要持有 GL 上下文的线程（Servo 线程）中调用。
     pub fn new(glfw_shared_window: *mut c_void) -> Result<Rc<Self>, String> {
         let glfw = glfw::LoadedGlfwApi::load()?;
-        let glfw_shared_window = glfw_shared_window.cast::<c_void>() as glfw::GlfwWindowPtr;
+        let glfw_shared_window = glfw_shared_window as glfw::GlfwWindowPtr;
 
         let glfw_window = unsafe { glfw.create_shared_offscreen_window(glfw_shared_window)? };
 
@@ -117,21 +107,18 @@ impl GlfwSharedContext {
         }
         CURRENT_GLFW_WINDOW.with(|current| current.set(glfw_window));
 
-        let glow = unsafe {
-            glow::Context::from_loader_function(|name| {
-                let cstr = CString::new(name).expect("gl proc name contains NUL");
-                glfw.get_proc_address(cstr.as_c_str()) as *const _
-            })
-        };
+        #[inline]
+        fn load_gl_proc(glfw: &glfw::LoadedGlfwApi, name: &str) -> *const c_void {
+            let cstr = CString::new(name).expect("gl proc name contains NUL");
+            unsafe { glfw.get_proc_address(cstr.as_c_str()) }
+        }
+
+        let glow = unsafe { glow::Context::from_loader_function(|name| load_gl_proc(&glfw, name)) };
 
         let gl_version = unsafe { glow.get_parameter_string(glow::VERSION) };
         let is_gles = gl_version.starts_with("OpenGL ES");
         let (major, minor) = parse_gl_version(&gl_version);
-        /// ### English
-        /// Desktop GL: sRGB is core since 3.0; GLES since 3.0. Assume supported for newer versions.
-        ///
-        /// ### 中文
-        /// Desktop GL：sRGB 从 3.0 起为核心特性；GLES：sRGB 从 3.0 起为核心特性。对更高版本直接假设可用。
+        // Desktop GL：sRGB 从 3.0 起为核心特性；GLES：sRGB 从 3.0 起为核心特性。对更高版本直接假设可用。
         let srgb_supported = if is_gles {
             major >= 3
         } else {
@@ -140,15 +127,9 @@ impl GlfwSharedContext {
 
         let gl: Rc<dyn Gl> = unsafe {
             if is_gles {
-                gl::GlesFns::load_with(|name| {
-                    let cstr = CString::new(name).expect("gl proc name contains NUL");
-                    glfw.get_proc_address(cstr.as_c_str()) as *const _
-                })
+                gl::GlesFns::load_with(|name| load_gl_proc(&glfw, name))
             } else {
-                gl::GlFns::load_with(|name| {
-                    let cstr = CString::new(name).expect("gl proc name contains NUL");
-                    glfw.get_proc_address(cstr.as_c_str()) as *const _
-                })
+                gl::GlFns::load_with(|name| load_gl_proc(&glfw, name))
             }
         };
 

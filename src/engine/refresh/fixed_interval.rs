@@ -119,9 +119,8 @@ impl FixedIntervalCoalesced {
         self.set_callback(callback);
         if !self.scheduled.swap(true, AtomicOrdering::AcqRel) {
             let state = self.clone();
-            let scheduler_for_enqueue = scheduler.clone();
             let scheduler_for_tick = scheduler.clone();
-            scheduler_for_enqueue.schedule(
+            scheduler.schedule(
                 delay,
                 Box::new(move || state.clone().tick(scheduler_for_tick.clone(), delay)),
             );
@@ -131,31 +130,18 @@ impl FixedIntervalCoalesced {
     fn tick(self: Arc<Self>, scheduler: Arc<RefreshScheduler>, delay: Duration) {
         let callback = self.take_callback();
 
-        /// ### English
-        /// Clear the scheduled flag before running the callback so a new `observe_next_frame()` call
-        /// during the callback can enqueue the next tick without waiting.
-        ///
-        /// ### 中文
-        /// 在执行回调之前清除 scheduled 标记，使回调期间发生的 `observe_next_frame()`
-        /// 可以直接安排下一次 tick。
+        // 执行回调之前清除 scheduled 标记，使回调期间的 `observe_next_frame()` 可以直接安排下一次 tick。
         self.scheduled.store(false, AtomicOrdering::Release);
 
         if let Some(callback) = callback {
             callback();
         }
 
-        /// ### English
-        /// Rare race: a producer may have published a callback while `scheduled` was still true
-        /// (between `take()` and `store(false)`), so we must re-arm the timer here.
-        ///
-        /// ### 中文
-        /// 罕见竞态：生产者可能在 `scheduled` 仍为 true 的窗口（`take()` 与 `store(false)` 之间）
-        /// 写入了新回调，此时需要在这里重新 arm。
+        // 罕见竞态：生产者可能在 `take()` 与 `store(false)` 之间写入了新回调，此时需要重新 arm。
         if self.callback.is_pending() && !self.scheduled.swap(true, AtomicOrdering::AcqRel) {
             let state = self.clone();
-            let scheduler_for_enqueue = scheduler.clone();
             let scheduler_for_tick = scheduler.clone();
-            scheduler_for_enqueue.schedule(
+            scheduler.schedule(
                 delay,
                 Box::new(move || state.clone().tick(scheduler_for_tick.clone(), delay)),
             );

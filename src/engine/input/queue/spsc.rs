@@ -6,34 +6,6 @@ use super::{INPUT_QUEUE_CAPACITY, INPUT_QUEUE_MASK, InputEventQueue};
 
 impl InputEventQueue {
     /// ### English
-    /// Single-producer bounded enqueue path (SPSC fast path).
-    ///
-    /// ### 中文
-    /// 单生产者有界入队路径（SPSC 快路径）。
-    #[inline]
-    pub(super) fn try_push_spsc(&self, event: XianWebEngineInputEvent) -> bool {
-        let head = self.enqueue_pos.load(Ordering::Relaxed);
-        let cached_tail = unsafe { *self.producer_cached_dequeue.get() };
-        if head.wrapping_sub(cached_tail) >= INPUT_QUEUE_CAPACITY {
-            let tail = self.dequeue_pos.load(Ordering::Acquire);
-            unsafe {
-                *self.producer_cached_dequeue.get() = tail;
-            }
-            if head.wrapping_sub(tail) >= INPUT_QUEUE_CAPACITY {
-                return false;
-            }
-        }
-
-        let slot = &self.slots[head & INPUT_QUEUE_MASK];
-        unsafe {
-            (*slot.value.get()).write(event);
-        }
-        self.enqueue_pos
-            .store(head.wrapping_add(1), Ordering::Release);
-        true
-    }
-
-    /// ### English
     /// Single-producer bulk enqueue path (SPSC).
     ///
     /// ### 中文
