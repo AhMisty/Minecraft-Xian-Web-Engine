@@ -1,3 +1,9 @@
+//! ### English
+//! Servo-thread command handling (create/destroy/shutdown).
+//!
+//! ### 中文
+//! Servo 线程的命令处理（create/destroy/shutdown）。
+
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -16,10 +22,32 @@ use super::view::{Delegate, ViewEntry};
 ///
 /// Returns `true` if a `Shutdown` command was received.
 ///
+/// #### Parameters
+/// - `servo`: Servo instance owned by the Servo thread.
+/// - `shared_ctx`: Shared GLFW context wrapper.
+/// - `vsync_queue`: Vsync callback queue for refresh driving.
+/// - `command_queue`: Control-command queue from embedder threads.
+/// - `refresh_scheduler`: Lazily-created refresh scheduler (shared across views).
+/// - `views`: Per-view entries owned by the Servo thread.
+/// - `free_view_ids`: Free-list of reusable view IDs.
+/// - `next_view_id`: Monotonic view-id allocator (used when free-list is empty).
+/// - `next_view_token`: Monotonic token allocator used to disambiguate reused IDs.
+///
 /// ### 中文
 /// drain 来自宿主线程的控制命令（create/destroy/shutdown）。
 ///
 /// 若收到 `Shutdown` 命令则返回 `true`。
+///
+/// #### 参数
+/// - `servo`：Servo 线程持有的 Servo 实例。
+/// - `shared_ctx`：共享 GLFW 上下文封装。
+/// - `vsync_queue`：用于驱动 refresh 的 vsync 回调队列。
+/// - `command_queue`：来自宿主线程的控制命令队列。
+/// - `refresh_scheduler`：按需创建的 refresh 调度器（多 view 共享）。
+/// - `views`：由 Servo 线程持有的 per-view 条目表。
+/// - `free_view_ids`：可复用 view ID 的 free-list。
+/// - `next_view_id`：单调递增的 view-id 分配器（free-list 为空时使用）。
+/// - `next_view_token`：单调递增 token 分配器，用于区分 ID 复用。
 #[allow(clippy::too_many_arguments)]
 pub(super) fn drain_commands(
     servo: &servo::Servo,
@@ -125,7 +153,10 @@ pub(super) fn drain_commands(
                     }
                 }
             }
-            Command::Shutdown => return true,
+            Command::Shutdown => {
+                command_queue.close();
+                return true;
+            }
         }
     }
 

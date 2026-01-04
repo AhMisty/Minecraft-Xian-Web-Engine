@@ -1,3 +1,13 @@
+//! ### English
+//! Consumer-side acquire logic for `SharedFrameState`.
+//!
+//! Promotes a READY slot into HELD and returns an `AcquiredFrame` snapshot.
+//!
+//! ### 中文
+//! `SharedFrameState` 的消费者侧 acquire 逻辑。
+//!
+//! 将 READY 槽位提升为 HELD，并返回 `AcquiredFrame` 快照。
+
 use std::sync::atomic::Ordering;
 
 use dpi::PhysicalSize;
@@ -25,6 +35,16 @@ impl SharedFrameState {
         self.try_acquire_ready_slot(front_hint)
     }
 
+    /// ### English
+    /// Tries to acquire a READY slot as HELD, preferring `front` as a hint.
+    ///
+    /// This performs a fast-path CAS on the hinted slot, then falls back to probing the other two
+    /// slots (triple-buffer) and prefers the newest frame sequence.
+    ///
+    /// ### 中文
+    /// 尝试将某个 READY 槽位 acquire 为 HELD，并优先使用 `front` 作为 hint。
+    ///
+    /// 先对 hint 槽位做快路径 CAS；失败后回退到探测另外两个槽位（三缓冲），并优先选择帧序号更新的槽位。
     fn try_acquire_ready_slot(&self, front: usize) -> Option<AcquiredFrame> {
         let front = if front < TRIPLE_BUFFER_COUNT {
             front
@@ -40,8 +60,6 @@ impl SharedFrameState {
             return Some(self.acquired_frame(front));
         }
 
-        // 回退：获取任意 READY 槽位，并优先选择 frame_seq 最新的那个。
-        // TRIPLE_BUFFER_COUNT 固定为 3，以最大化性能并简化分支。
         debug_assert_eq!(TRIPLE_BUFFER_COUNT, 3);
         let slot_a = (front + 1) % TRIPLE_BUFFER_COUNT;
         let slot_b = (front + 2) % TRIPLE_BUFFER_COUNT;
@@ -82,6 +100,17 @@ impl SharedFrameState {
         None
     }
 
+    /// ### English
+    /// Builds an `AcquiredFrame` snapshot for the given slot using Relaxed loads.
+    ///
+    /// #### Parameters
+    /// - `slot`: Slot index to snapshot.
+    ///
+    /// ### 中文
+    /// 使用 Relaxed load 为指定槽位构造 `AcquiredFrame` 快照。
+    ///
+    /// #### 参数
+    /// - `slot`：需要构造快照的槽位索引。
     fn acquired_frame(&self, slot: usize) -> AcquiredFrame {
         let slot_state = &self.slots[slot];
         let size = PhysicalSize::new(

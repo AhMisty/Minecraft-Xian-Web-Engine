@@ -1,4 +1,10 @@
-use std::cell::{Cell, RefCell};
+//! ### English
+//! Initialization for `GlfwTripleBufferRenderingContext`.
+//!
+//! ### 中文
+//! `GlfwTripleBufferRenderingContext` 的初始化逻辑。
+
+use std::cell::{Cell, UnsafeCell};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -16,11 +22,17 @@ impl GlfwTripleBufferRenderingContext {
     /// Must be called on the Servo thread (the thread that owns `shared_ctx`).
     /// If `target_fps == 0`, refresh is driven by external vsync (`VsyncRefreshDriver`).
     ///
+    /// #### Parameters
+    /// - `init`: Initialization bundle for the rendering context.
+    ///
     /// ### 中文
     /// 创建三缓冲离屏渲染上下文。
     ///
     /// 必须在 Servo 线程（持有 `shared_ctx` 的线程）调用。
     /// 若 `target_fps == 0`，则由外部 vsync（`VsyncRefreshDriver`）驱动刷新。
+    ///
+    /// #### 参数
+    /// - `init`：渲染上下文的初始化参数包。
     pub fn new(init: GlfwTripleBufferContextInit) -> Result<Self, String> {
         let GlfwTripleBufferContextInit {
             shared_ctx,
@@ -33,10 +45,10 @@ impl GlfwTripleBufferRenderingContext {
             refresh_scheduler,
         } = init;
 
-        shared_ctx.make_current_unsafe();
+        shared_ctx.make_current();
 
-        let gl = shared_ctx.gleam_gl();
-        let glow = shared_ctx.glow_gl();
+        let gl = shared_ctx.gl();
+        let glow = shared_ctx.glow();
         let use_srgb = shared_ctx.supports_srgb();
         let internal_format = if use_srgb {
             gl::SRGB8_ALPHA8 as gl::GLint
@@ -83,7 +95,7 @@ impl GlfwTripleBufferRenderingContext {
             refresh_driver,
             size: Cell::new(initial_size),
             depth_stencil_rb,
-            slots: RefCell::new(slots),
+            slots: UnsafeCell::new(slots),
             back_slot: Cell::new(0),
             reserved_next_back: Cell::new(None),
             next_frame_seq: Cell::new(0),

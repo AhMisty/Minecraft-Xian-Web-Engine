@@ -1,10 +1,22 @@
+//! ### English
+//! GLFW key-code to Servo `Code` mapping.
+//!
+//! ### 中文
+//! GLFW 键码到 Servo `Code` 的映射。
+
 /// ### English
 /// Maps GLFW key codes into W3C `Code` values used by Servo.
 /// This is a best-effort mapping for embedder-side key events.
 ///
+/// #### Parameters
+/// - `glfw_key`: GLFW key code.
+///
 /// ### 中文
 /// 将 GLFW 键码映射到 Servo 使用的 W3C `Code`。
 /// 这是宿主侧键盘事件的尽力映射（best-effort）。
+///
+/// #### 参数
+/// - `glfw_key`：GLFW 键码。
 pub(in super::super) fn glfw_key_to_code(glfw_key: u32) -> servo::Code {
     use servo::Code;
 

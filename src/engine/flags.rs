@@ -1,10 +1,12 @@
-/// ### English
-/// Bitflags controlling optional view behaviors.
-/// These are passed through the C ABI as a `u32` bitmask.
-///
-/// ### 中文
-/// 控制 view 可选行为的位标志（bitflags）。
-/// 通过 C ABI 以 `u32` 位掩码传入。
+//! ### English
+//! Bitflags controlling optional view behaviors.
+//!
+//! These are passed through the C ABI as a `u32` bitmask.
+//!
+//! ### 中文
+//! 控制 view 可选行为的位标志（bitflags）。
+//!
+//! 通过 C ABI 以 `u32` 位掩码传入。
 /// ### English
 /// Unsafe mode: skip Java-side consumer fences (fastest but may overwrite textures still in use).
 ///
@@ -20,9 +22,11 @@ pub const XIAN_WEB_ENGINE_VIEW_FLAG_UNSAFE_NO_CONSUMER_FENCE: u32 = 1 << 0;
 
 /// ### English
 /// Hint: the embedder guarantees a single input-producer thread (enables a faster push path).
+/// If this guarantee is violated (multiple producer threads), behavior is undefined.
 ///
 /// ### 中文
 /// 提示：宿主保证输入生产者只有一个线程（启用更快的 push 路径）。
+/// 若该保证被违反（存在多个生产者线程），则行为未定义。
 pub const XIAN_WEB_ENGINE_VIEW_FLAG_INPUT_SINGLE_PRODUCER: u32 = 1 << 1;
 
 /// ### English

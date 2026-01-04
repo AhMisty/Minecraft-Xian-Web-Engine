@@ -1,23 +1,59 @@
+//! ### English
+//! Lock-free shared state for triple-buffered frames.
+//!
+//! Shared between the Servo thread (producer) and the Java thread (consumer).
+//! Includes the packed "latest READY slot" pointer and global flags.
+//!
+//! ### 中文
+//! 三缓冲帧的无锁共享状态。
+//!
+//! 由 Servo 线程（生产者）与 Java 线程（消费者）共享。
+//! 包含打包后的“latest READY 槽位”指针与全局标记位。
+
 use std::sync::atomic::{AtomicU8, AtomicU64};
 
 use dpi::PhysicalSize;
 
-use crate::engine::cache::CACHE_LINE_BYTES;
+use crate::engine::cache::{pad_after, pad_after2};
 
 use super::TRIPLE_BUFFER_COUNT;
 use super::slot::SlotAtomics;
 
-const CACHE_PAD_U64_BYTES: usize = CACHE_LINE_BYTES - std::mem::size_of::<AtomicU64>();
-const FRAME_FLAGS_PAD_BYTES: usize = CACHE_LINE_BYTES - 2 * std::mem::size_of::<AtomicU8>();
+const CACHE_PAD_U64_BYTES: usize = pad_after::<AtomicU64>();
+const FRAME_FLAGS_PAD_BYTES: usize = pad_after2::<AtomicU8, AtomicU8>();
 
 const SLOT_INDEX_BITS: u64 = 2;
 
 #[inline]
+/// ### English
+/// Packs `(frame_seq, slot)` into a single `u64` used for the global "latest" pointer.
+///
+/// #### Parameters
+/// - `frame_seq`: Frame sequence number.
+/// - `slot`: Triple-buffer slot index.
+///
+/// ### 中文
+/// 将 `(frame_seq, slot)` 打包到一个 `u64` 中，用于全局 “latest” 指针。
+///
+/// #### 参数
+/// - `frame_seq`：帧序号。
+/// - `slot`：三缓冲槽位索引。
 fn pack_latest(frame_seq: u64, slot: usize) -> u64 {
     (frame_seq << SLOT_INDEX_BITS) | (slot as u64 & ((1u64 << SLOT_INDEX_BITS) - 1))
 }
 
 #[inline]
+/// ### English
+/// Unpacks a `u64` produced by `pack_latest` into `(frame_seq, slot)`.
+///
+/// #### Parameters
+/// - `packed`: Value returned by `pack_latest`.
+///
+/// ### 中文
+/// 将 `pack_latest` 产生的 `u64` 解包为 `(frame_seq, slot)`。
+///
+/// #### 参数
+/// - `packed`：由 `pack_latest` 产生的值。
 fn unpack_latest(packed: u64) -> (u64, usize) {
     (
         packed >> SLOT_INDEX_BITS,
@@ -47,6 +83,11 @@ pub struct SharedFrameState {
 }
 
 #[repr(C, align(64))]
+/// ### English
+/// Cache-line separated global metadata shared by all slots.
+///
+/// ### 中文
+/// 与槽位分离、按 cache line 隔离的全局元数据。
 struct FrameMeta {
     /// ### English
     /// Packed `(frame_seq, slot)` pointer to the latest READY frame.
@@ -60,10 +101,20 @@ struct FrameMeta {
     /// ### 中文
     /// 填充：让 `flags` 与 `latest_packed` 尽量处于不同缓存行（降低伪共享）。
     _pad_latest: [u8; CACHE_PAD_U64_BYTES],
+    /// ### English
+    /// Global flags shared by all slots.
+    ///
+    /// ### 中文
+    /// 由所有槽位共享的全局标记位。
     flags: FrameFlags,
 }
 
 #[repr(C, align(64))]
+/// ### English
+/// Cache-line separated global flags shared by all slots.
+///
+/// ### 中文
+/// 与槽位分离、按 cache line 隔离的全局标记位。
 struct FrameFlags {
     /// ### English
     /// Global resizing flag (consumer should stop acquiring when non-zero).
@@ -77,6 +128,11 @@ struct FrameFlags {
     /// ### 中文
     /// active 标记，用于节流渲染/输入（非 0 = active）。
     active: AtomicU8,
+    /// ### English
+    /// Padding for cache-line separation.
+    ///
+    /// ### 中文
+    /// cache line 隔离填充。
     _padding: [u8; FRAME_FLAGS_PAD_BYTES],
 }
 

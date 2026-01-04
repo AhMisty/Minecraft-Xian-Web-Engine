@@ -1,8 +1,25 @@
+//! ### English
+//! Slot reservation logic for the triple-buffered rendering context.
+//!
+//! ### 中文
+//! 三缓冲渲染上下文的槽位预留逻辑。
+
 use crate::engine::frame::{SLOT_FREE, SLOT_READY, SLOT_RENDERING, TRIPLE_BUFFER_COUNT};
 
 use super::GlfwTripleBufferRenderingContext;
 
 impl GlfwTripleBufferRenderingContext {
+    /// ### English
+    /// Prepares a slot for rendering by cleaning up fences and ensuring the texture size.
+    ///
+    /// #### Parameters
+    /// - `slot`: Slot index to prepare.
+    ///
+    /// ### 中文
+    /// 为渲染准备一个槽位：清理 fences，并确保纹理尺寸正确。
+    ///
+    /// #### 参数
+    /// - `slot`：需要准备的槽位索引。
     #[inline]
     fn prepare_slot_for_rendering(&self, slot: usize) {
         self.delete_producer_fence_if_any(slot);
@@ -12,23 +29,43 @@ impl GlfwTripleBufferRenderingContext {
         self.ensure_slot_size(slot);
     }
 
+    /// ### English
+    /// Ensures the GL resources for `slot` match the current desired size.
+    ///
+    /// ### 中文
+    /// 确保 `slot` 的 GL 资源尺寸与当前期望尺寸一致。
     pub(in crate::engine::rendering::triple_buffer) fn ensure_slot_size(&self, slot: usize) {
         if slot >= TRIPLE_BUFFER_COUNT {
             return;
         }
 
         let desired_size = self.size.get();
-        let mut slots = self.slots.borrow_mut();
-        let existing = &mut slots[slot];
+        self.with_slots_mut(|slots| {
+            let existing = &mut slots[slot];
+            if existing.size == desired_size {
+                return;
+            }
 
-        if existing.size == desired_size {
-            return;
-        }
-
-        existing.resize(&self.gl, desired_size, self.internal_format);
-        self.shared.set_slot_size(slot, desired_size);
+            existing.resize(&self.gl, desired_size, self.internal_format);
+            self.shared.set_slot_size(slot, desired_size);
+        });
     }
 
+    /// ### English
+    /// Tries to reserve the next back slot for the producer.
+    ///
+    /// Strategy (triple-buffer, two candidates besides `current_back`):
+    /// - Fast path: reserve any FREE slot.
+    /// - Fallback: steal a READY slot, preferring the older READY to avoid stealing the newest frame.
+    /// - Safe mode: if no FREE/READY, poll consumer fences to reclaim RELEASE_PENDING and retry.
+    ///
+    /// ### 中文
+    /// 尝试为生产者预留下一 back 槽位。
+    ///
+    /// 策略（三缓冲，候选为 `current_back` 之外的两个槽位）：
+    /// - 快路径：优先预留任意 FREE 槽位。
+    /// - 回退：抢占 READY 槽位，并优先抢占更旧的 READY，避免把最新帧从消费者手里抢走。
+    /// - 安全模式：若没有 FREE/READY，则轮询 consumer fence 回收 RELEASE_PENDING，再重试。
     pub(in crate::engine::rendering::triple_buffer) fn try_reserve_next_back_slot(
         &self,
         current_back: usize,
@@ -37,7 +74,6 @@ impl GlfwTripleBufferRenderingContext {
         let slot_a = (current_back + 1) % TRIPLE_BUFFER_COUNT;
         let slot_b = (current_back + 2) % TRIPLE_BUFFER_COUNT;
 
-        // 快路径：大多数情况下三缓冲至少会有一个 FREE 槽位。
         for slot in [slot_a, slot_b] {
             if self
                 .shared
@@ -48,8 +84,6 @@ impl GlfwTripleBufferRenderingContext {
             }
         }
 
-        // 没有 FREE 槽位；抢占一个 READY 槽位。
-        // 优先抢占最旧的 READY，避免把最新帧从消费者手里抢走。
         let state_a = self.shared.slot_state_relaxed(slot_a);
         let state_b = self.shared.slot_state_relaxed(slot_b);
 
@@ -83,8 +117,6 @@ impl GlfwTripleBufferRenderingContext {
             }
         }
 
-        // 没有 FREE/READY 槽位。
-        // 安全模式下通过轮询 consumer fence（非阻塞）回收 RELEASE_PENDING 槽位；仅在慢路径执行，避免每帧额外的 GL 同步查询。
         if !self.unsafe_no_consumer_fence {
             self.reclaim_release_pending_slots();
 

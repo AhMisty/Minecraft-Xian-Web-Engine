@@ -1,3 +1,9 @@
+//! ### English
+//! Cold overflow fallback path for `VsyncCallbackQueue`.
+//!
+//! ### 中文
+//! `VsyncCallbackQueue` 的冷路径 overflow 回退实现。
+
 use std::ptr;
 use std::sync::atomic::Ordering;
 
@@ -6,7 +12,23 @@ use super::super::overflow::VsyncCallbackNode;
 use super::{VSYNC_OVERFLOW_MAX, VsyncCallbackQueue};
 
 impl VsyncCallbackQueue {
-    pub(super) fn enqueue_overflow(&self, callback: VsyncCallback) {
+    /// ### English
+    /// Pushes a callback into the cold overflow list (used when the ring buffer is full).
+    ///
+    /// This path is capped by `VSYNC_OVERFLOW_MAX` to prevent unbounded growth when the consumer
+    /// stalls.
+    ///
+    /// #### Parameters
+    /// - `callback`: Callback to push.
+    ///
+    /// ### 中文
+    /// 将回调 push 到冷路径 overflow 链表（ring buffer 满时使用）。
+    ///
+    /// 该路径受 `VSYNC_OVERFLOW_MAX` 限制，避免消费者停滞时无界增长。
+    ///
+    /// #### 参数
+    /// - `callback`：要 push 的回调。
+    pub(super) fn push_overflow(&self, callback: VsyncCallback) {
         let prev = self.overflow_len.fetch_add(1, Ordering::Relaxed);
         if prev >= VSYNC_OVERFLOW_MAX {
             self.overflow_len.fetch_sub(1, Ordering::Relaxed);
@@ -40,6 +62,17 @@ impl VsyncCallbackQueue {
         }
     }
 
+    /// ### English
+    /// Drains an intrusive overflow list, executing callbacks and recycling nodes.
+    ///
+    /// #### Parameters
+    /// - `overflow`: Overflow list head pointer (NULL is a no-op).
+    ///
+    /// ### 中文
+    /// drain 一条侵入式 overflow 链表：执行回调并回收节点。
+    ///
+    /// #### 参数
+    /// - `overflow`：overflow 链表头指针（NULL 则无操作）。
     pub(super) fn drain_overflow_list(&self, mut overflow: *mut VsyncCallbackNode) {
         if overflow.is_null() {
             return;
@@ -79,6 +112,11 @@ impl VsyncCallbackQueue {
         }
     }
 
+    /// ### English
+    /// Pops one reusable overflow node from the producer-local cache or the global free-list.
+    ///
+    /// ### 中文
+    /// 从生产者本地缓存或全局 free-list 弹出一个可复用的 overflow 节点。
     fn pop_free_node(&self) -> Option<*mut VsyncCallbackNode> {
         let local = unsafe { *self.producer_free_cache.get() };
         if !local.is_null() {
@@ -101,6 +139,19 @@ impl VsyncCallbackQueue {
         Some(list)
     }
 
+    /// ### English
+    /// Pushes a linked list of nodes back into the global free-list.
+    ///
+    /// #### Parameters
+    /// - `head_node`: Head pointer of the node list.
+    /// - `tail_node`: Tail pointer of the node list.
+    ///
+    /// ### 中文
+    /// 将一条节点链表推回全局 free-list。
+    ///
+    /// #### 参数
+    /// - `head_node`：节点链表头指针。
+    /// - `tail_node`：节点链表尾指针。
     fn push_free_list(&self, head_node: *mut VsyncCallbackNode, tail_node: *mut VsyncCallbackNode) {
         loop {
             let head = self.free.load(Ordering::Acquire);

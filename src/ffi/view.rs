@@ -1,3 +1,9 @@
+//! ### English
+//! C ABI bindings for view lifecycle and view-level requests.
+//!
+//! ### 中文
+//! view 生命周期与 view 级别请求的 C ABI 绑定。
+
 use std::ffi::{CStr, c_char};
 
 use dpi::PhysicalSize;
@@ -77,10 +83,18 @@ pub unsafe extern "C" fn xian_web_engine_view_set_active(view: *mut XianWebEngin
 ///
 /// The URL must be a NUL-terminated UTF-8 string.
 ///
+/// Return value:
+/// - `false` if `view`/`url` is NULL or the string is not valid UTF-8.
+/// - `true` otherwise (the request is recorded and coalesced; URL parsing happens on the Servo thread).
+///
 /// ### 中文
 /// 请求跳转到指定 URL。
 ///
 /// URL 必须是 NUL 结尾的 UTF-8 字符串。
+///
+/// 返回值：
+/// - 当 `view`/`url` 为空指针，或字符串不是合法 UTF-8 时返回 `false`。
+/// - 其它情况返回 `true`（请求会被记录并合并；URL 解析在 Servo 线程进行）。
 pub unsafe extern "C" fn xian_web_engine_view_load_url(
     view: *mut XianWebEngineView,
     url: *const c_char,

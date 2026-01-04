@@ -1,13 +1,15 @@
-/// ### English
-/// Shared GLFW OpenGL context wrapper.
-/// Creates an offscreen shared context so the Servo thread can render into textures that the
-/// Java/GLFW context can sample.
-///
-/// ### 中文
-/// 共享 GLFW OpenGL 上下文封装。
-/// 创建离屏共享上下文，使 Servo 线程能渲染到纹理，供 Java/GLFW 上下文采样。
+//! ### English
+//! Shared GLFW OpenGL context wrapper.
+//!
+//! Creates an offscreen shared context so the Servo thread can render into textures that the
+//! Java/GLFW context can sample.
+//!
+//! ### 中文
+//! 共享 GLFW OpenGL 上下文封装。
+//!
+//! 创建离屏共享上下文，使 Servo 线程能渲染到纹理，供 Java/GLFW 上下文采样。
 use std::cell::Cell;
-use std::ffi::{CString, c_void};
+use std::ffi::{CStr, c_void};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -17,8 +19,28 @@ use surfman::Connection;
 
 use crate::engine::glfw;
 
+/// ### English
+/// Parses an OpenGL version string and returns `(major, minor)`.
+///
+/// #### Parameters
+/// - `version`: Raw OpenGL version string returned by the driver.
+///
+/// Supported inputs include:
+///
+/// - `"4.6.0 ..."`
+/// - `"OpenGL ES 3.2 ..."`
+///
+/// ### 中文
+/// 解析 OpenGL 版本字符串并返回 `(major, minor)`。
+///
+/// #### 参数
+/// - `version`：驱动返回的原始 OpenGL 版本字符串。
+///
+/// 支持的输入示例：
+///
+/// - `"4.6.0 ..."`
+/// - `"OpenGL ES 3.2 ..."`
 fn parse_gl_version(version: &str) -> (u32, u32) {
-    // 期望的版本字符串形式：`"4.6.0 ..."` 或 `"OpenGL ES 3.2 ..."`。
     let mut major = 0u32;
     let mut minor = 0u32;
     if let Some(token) = version.split_whitespace().find(|t| {
@@ -38,10 +60,47 @@ fn parse_gl_version(version: &str) -> (u32, u32) {
     (major, minor)
 }
 
-// 每线程缓存“当前 GLFW window”，避免重复 `makeCurrent` 调用。
 thread_local! {
     static CURRENT_GLFW_WINDOW: Cell<glfw::GlfwWindowPtr> =
         const { Cell::new(std::ptr::null_mut()) };
+}
+
+#[inline]
+/// ### English
+/// Destroys the offscreen GLFW window/context and clears the per-thread current cache if needed.
+///
+/// This assumes the caller is on the thread allowed to manipulate the GLFW context.
+///
+/// #### Parameters
+/// - `glfw`: Loaded GLFW API table.
+/// - `window`: Offscreen GLFW window to destroy (NULL is a no-op).
+///
+/// ### 中文
+/// 销毁离屏 GLFW window/context，并在需要时清理“每线程 current 缓存”。
+///
+/// 该函数假设调用方位于允许操作该 GLFW 上下文的线程上。
+///
+/// #### 参数
+/// - `glfw`：已加载的 GLFW API 表。
+/// - `window`：要销毁的离屏 window（NULL 则无操作）。
+fn destroy_offscreen_window(glfw: &glfw::LoadedGlfwApi, window: glfw::GlfwWindowPtr) {
+    if window.is_null() {
+        return;
+    }
+
+    unsafe {
+        glfw.make_current(std::ptr::null_mut());
+    }
+
+    CURRENT_GLFW_WINDOW.with(|current| {
+        if current.get() == window {
+            current.set(std::ptr::null_mut());
+        }
+    });
+
+    unsafe {
+        glfw.destroy_window(window);
+    }
 }
 
 /// ### English
@@ -107,10 +166,98 @@ impl GlfwSharedContext {
         }
         CURRENT_GLFW_WINDOW.with(|current| current.set(glfw_window));
 
+        /// ### English
+        /// Drop guard that destroys the offscreen window/context if `new()` fails part-way through.
+        ///
+        /// ### 中文
+        /// 用于 `new()` 中途失败时的 drop guard：负责销毁离屏 window/context。
+        struct OffscreenWindowGuard {
+            /// ### English
+            /// Loaded GLFW API table used to destroy the window.
+            ///
+            /// ### 中文
+            /// 已加载的 GLFW API 表，用于销毁该 window。
+            glfw: glfw::LoadedGlfwApi,
+            /// ### English
+            /// Offscreen window to destroy (NULL means already handed off).
+            ///
+            /// ### 中文
+            /// 需要销毁的离屏 window（NULL 表示已移交）。
+            window: glfw::GlfwWindowPtr,
+        }
+
+        impl Drop for OffscreenWindowGuard {
+            /// ### English
+            /// Cleans up the offscreen window if initialization fails before it is handed off.
+            ///
+            /// ### 中文
+            /// 若初始化在移交前失败，则清理离屏 window。
+            fn drop(&mut self) {
+                destroy_offscreen_window(&self.glfw, self.window);
+            }
+        }
+
+        let mut offscreen_guard = OffscreenWindowGuard {
+            glfw,
+            window: glfw_window,
+        };
+
+        #[cold]
+        #[inline(never)]
+        /// ### English
+        /// Loads a GL proc by allocating a temporary NUL-terminated buffer on the heap.
+        ///
+        /// #### Parameters
+        /// - `glfw`: Loaded GLFW API table.
+        /// - `bytes`: Proc name bytes (must not contain NUL).
+        ///
+        /// ### 中文
+        /// 通过在堆上临时分配 NUL 结尾缓冲区来加载 GL 函数指针。
+        ///
+        /// #### 参数
+        /// - `glfw`：已加载的 GLFW API 表。
+        /// - `bytes`：函数名字节（不得包含 NUL）。
+        fn load_gl_proc_heap(glfw: &glfw::LoadedGlfwApi, bytes: &[u8]) -> *const c_void {
+            if bytes.contains(&0) {
+                panic!("gl proc name contains NUL");
+            }
+            let mut buf = Vec::with_capacity(bytes.len() + 1);
+            buf.extend_from_slice(bytes);
+            buf.push(0);
+            let cstr = unsafe { CStr::from_bytes_with_nul_unchecked(&buf) };
+            unsafe { glfw.get_proc_address(cstr) }
+        }
+
         #[inline]
+        /// ### English
+        /// Loads a GL proc using a stack buffer when possible (falls back to heap for long names).
+        ///
+        /// #### Parameters
+        /// - `glfw`: Loaded GLFW API table.
+        /// - `name`: Proc name (ASCII, must not contain NUL).
+        ///
+        /// ### 中文
+        /// 尽可能使用栈缓冲区加载 GL 函数指针（名称过长时回退到堆分配）。
+        ///
+        /// #### 参数
+        /// - `glfw`：已加载的 GLFW API 表。
+        /// - `name`：函数名（ASCII，不得包含 NUL）。
         fn load_gl_proc(glfw: &glfw::LoadedGlfwApi, name: &str) -> *const c_void {
-            let cstr = CString::new(name).expect("gl proc name contains NUL");
-            unsafe { glfw.get_proc_address(cstr.as_c_str()) }
+            const STACK_BUF_SIZE: usize = 128;
+
+            let bytes = name.as_bytes();
+            if bytes.len() < STACK_BUF_SIZE {
+                if bytes.contains(&0) {
+                    panic!("gl proc name contains NUL");
+                }
+                let mut buf = [0u8; STACK_BUF_SIZE];
+                buf[..bytes.len()].copy_from_slice(bytes);
+                buf[bytes.len()] = 0;
+                let cstr = unsafe { CStr::from_bytes_with_nul_unchecked(&buf[..bytes.len() + 1]) };
+                unsafe { glfw.get_proc_address(cstr) }
+            } else {
+                load_gl_proc_heap(glfw, bytes)
+            }
         }
 
         let glow = unsafe { glow::Context::from_loader_function(|name| load_gl_proc(&glfw, name)) };
@@ -118,7 +265,6 @@ impl GlfwSharedContext {
         let gl_version = unsafe { glow.get_parameter_string(glow::VERSION) };
         let is_gles = gl_version.starts_with("OpenGL ES");
         let (major, minor) = parse_gl_version(&gl_version);
-        // Desktop GL：sRGB 从 3.0 起为核心特性；GLES：sRGB 从 3.0 起为核心特性。对更高版本直接假设可用。
         let srgb_supported = if is_gles {
             major >= 3
         } else {
@@ -135,6 +281,7 @@ impl GlfwSharedContext {
 
         let surfman_connection = Connection::new()
             .map_err(|err| format!("Failed to create surfman Connection: {err:?}"))?;
+        offscreen_guard.window = std::ptr::null_mut();
 
         Ok(Rc::new(Self {
             glfw,
@@ -151,7 +298,8 @@ impl GlfwSharedContext {
     ///
     /// ### 中文
     /// 使该共享上下文在调用线程上变为 current。
-    pub(in crate::engine::rendering) fn make_current_unsafe(&self) {
+    #[inline]
+    pub(in crate::engine::rendering) fn make_current(&self) {
         CURRENT_GLFW_WINDOW.with(|current| {
             if current.get() == self.glfw_window {
                 return;
@@ -169,7 +317,8 @@ impl GlfwSharedContext {
     ///
     /// ### 中文
     /// 返回 gleam GL API 封装（`Rc` 的低成本 clone）。
-    pub(in crate::engine::rendering) fn gleam_gl(&self) -> Rc<dyn Gl> {
+    #[inline]
+    pub(in crate::engine::rendering) fn gl(&self) -> Rc<dyn Gl> {
         self.gl.clone()
     }
 
@@ -178,7 +327,8 @@ impl GlfwSharedContext {
     ///
     /// ### 中文
     /// 返回 glow GL API 封装（`Arc` 的低成本 clone）。
-    pub(in crate::engine::rendering) fn glow_gl(&self) -> Arc<glow::Context> {
+    #[inline]
+    pub(in crate::engine::rendering) fn glow(&self) -> Arc<glow::Context> {
         self.glow.clone()
     }
 
@@ -187,7 +337,8 @@ impl GlfwSharedContext {
     ///
     /// ### 中文
     /// 返回 surfman connection 的克隆（用于 Servo/WebRender 集成）。
-    pub(in crate::engine::rendering) fn connection_clone(&self) -> Connection {
+    #[inline]
+    pub(in crate::engine::rendering) fn connection(&self) -> Connection {
         self.surfman_connection.clone()
     }
 
@@ -196,6 +347,7 @@ impl GlfwSharedContext {
     ///
     /// ### 中文
     /// 返回是否支持 sRGB framebuffer/纹理格式。
+    #[inline]
     pub(in crate::engine::rendering) fn supports_srgb(&self) -> bool {
         self.srgb_supported
     }
@@ -208,14 +360,6 @@ impl Drop for GlfwSharedContext {
     /// ### 中文
     /// Drop 时销毁离屏 window/context。
     fn drop(&mut self) {
-        unsafe {
-            self.glfw.make_current(std::ptr::null_mut());
-            CURRENT_GLFW_WINDOW.with(|current| {
-                if current.get() == self.glfw_window {
-                    current.set(std::ptr::null_mut());
-                }
-            });
-            self.glfw.destroy_window(self.glfw_window);
-        }
+        destroy_offscreen_window(&self.glfw, self.glfw_window);
     }
 }

@@ -1,8 +1,8 @@
-/// ### English
-/// Internal command protocol between embedder threads and the dedicated Servo thread.
-///
-/// ### 中文
-/// 宿主线程与独立 Servo 线程之间的内部命令协议。
+//! ### English
+//! Internal command protocol between embedder threads and the dedicated Servo thread.
+//!
+//! ### 中文
+//! 宿主线程与独立 Servo 线程之间的内部命令协议。
 use std::sync::Arc;
 
 use dpi::PhysicalSize;
@@ -40,7 +40,7 @@ pub(super) enum Command {
         /// Per-view pending work bitmask (used to coalesce wakeups and queueing).
         ///
         /// ### 中文
-        /// 每 view 的 pending work bitmask（用于合并唤醒与入队）。
+        /// 每 view 的 pending work bitmask（用于合并唤醒与 push）。
         pending: Arc<PendingWork>,
         target_fps: u32,
         unsafe_no_consumer_fence: bool,

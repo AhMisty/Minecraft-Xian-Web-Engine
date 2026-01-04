@@ -1,8 +1,20 @@
+//! ### English
+//! GLFW key-code to Servo `NamedKey` mapping.
+//!
+//! ### 中文
+//! GLFW 键码到 Servo `NamedKey` 的映射。
+
 /// ### English
 /// Named key mapping (Enter/Escape/Arrows/Function keys...).
 ///
+/// #### Parameters
+/// - `glfw_key`: GLFW key code.
+///
 /// ### 中文
 /// 命名按键映射（Enter/Escape/方向键/功能键等）。
+///
+/// #### 参数
+/// - `glfw_key`：GLFW 键码。
 pub(super) fn glfw_key_to_named_key(glfw_key: u32) -> Option<servo::NamedKey> {
     use servo::NamedKey;
     match glfw_key {

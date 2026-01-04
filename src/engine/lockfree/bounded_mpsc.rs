@@ -1,12 +1,35 @@
+//! ### English
+//! Bounded lock-free MPSC queue (multi-producer, single-consumer).
+//!
+//! ### 中文
+//! 有界无锁 MPSC 队列（多生产者、单消费者）。
+
 use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::engine::cache::CACHE_PAD_BYTES;
+use crate::engine::cache::pad_after;
+
+const PAD_ATOMIC_USIZE: usize = pad_after::<AtomicUsize>();
 
 #[repr(C)]
+/// ### English
+/// One ring slot used by the bounded MPSC algorithm (sequence + payload).
+///
+/// ### 中文
+/// 有界 MPSC 算法使用的单个 ring 槽位（序号 + 载荷）。
 struct RingSlot<T> {
+    /// ### English
+    /// Slot sequence used by the bounded ring algorithm.
+    ///
+    /// ### 中文
+    /// 有界 ring 算法使用的槽位序号。
     seq: AtomicUsize,
+    /// ### English
+    /// Payload storage written by producers and read by the single consumer.
+    ///
+    /// ### 中文
+    /// 载荷存储区：由生产者写入、单消费者读取。
     value: UnsafeCell<MaybeUninit<T>>,
 }
 
@@ -26,12 +49,47 @@ unsafe impl<T: Send> Sync for RingSlot<T> {}
 /// - 满时返回 `Err(value)`，由调用方决定背压策略。
 #[repr(C, align(64))]
 pub(crate) struct BoundedMpscQueue<T> {
-    enqueue_pos: AtomicUsize,
-    _pad_enqueue: [u8; CACHE_PAD_BYTES],
-    dequeue_pos: AtomicUsize,
-    _pad_dequeue: [u8; CACHE_PAD_BYTES],
+    /// ### English
+    /// Producer head index (push position).
+    ///
+    /// ### 中文
+    /// 生产者 head（push 位置）。
+    head: AtomicUsize,
+    /// ### English
+    /// Padding to keep producer and consumer indices on different cache lines.
+    ///
+    /// ### 中文
+    /// 填充：让生产者/消费者索引尽量不共用 cache line（降低伪共享）。
+    _pad_head: [u8; PAD_ATOMIC_USIZE],
+    /// ### English
+    /// Consumer tail index (pop position).
+    ///
+    /// ### 中文
+    /// 消费者 tail（pop 位置）。
+    tail: AtomicUsize,
+    /// ### English
+    /// Padding to keep producer and consumer indices on different cache lines.
+    ///
+    /// ### 中文
+    /// 填充：让生产者/消费者索引尽量不共用 cache line（降低伪共享）。
+    _pad_tail: [u8; PAD_ATOMIC_USIZE],
+    /// ### English
+    /// Bitmask for indexing into `slots` (capacity is a power of two).
+    ///
+    /// ### 中文
+    /// 用于索引 `slots` 的掩码（capacity 为 2 的幂）。
     mask: usize,
+    /// ### English
+    /// Total ring capacity (power of two).
+    ///
+    /// ### 中文
+    /// ring 总容量（2 的幂）。
     capacity: usize,
+    /// ### English
+    /// Ring-buffer storage.
+    ///
+    /// ### 中文
+    /// ring buffer 存储区。
     slots: Box<[RingSlot<T>]>,
 }
 
@@ -57,10 +115,10 @@ impl<T> BoundedMpscQueue<T> {
         }
 
         Self {
-            enqueue_pos: AtomicUsize::new(0),
-            _pad_enqueue: [0; CACHE_PAD_BYTES],
-            dequeue_pos: AtomicUsize::new(0),
-            _pad_dequeue: [0; CACHE_PAD_BYTES],
+            head: AtomicUsize::new(0),
+            _pad_head: [0; PAD_ATOMIC_USIZE],
+            tail: AtomicUsize::new(0),
+            _pad_tail: [0; PAD_ATOMIC_USIZE],
             mask: capacity - 1,
             capacity,
             slots: slots.into_boxed_slice(),
@@ -68,23 +126,29 @@ impl<T> BoundedMpscQueue<T> {
     }
 
     /// ### English
-    /// Tries to enqueue one item.
+    /// Tries to push one item.
+    ///
+    /// #### Parameters
+    /// - `value`: Item to push.
     ///
     /// Returns `Ok(())` on success; returns `Err(value)` if the ring is full.
     ///
     /// ### 中文
-    /// 尝试入队一个元素。
+    /// 尝试 push 一个元素。
+    ///
+    /// #### 参数
+    /// - `value`：要 push 的元素。
     ///
     /// 成功返回 `Ok(())`；若 ring 已满则返回 `Err(value)`。
     pub(crate) fn try_push(&self, value: T) -> Result<(), T> {
-        let mut pos = self.enqueue_pos.load(Ordering::Relaxed);
+        let mut pos = self.head.load(Ordering::Relaxed);
         loop {
             let slot = &self.slots[pos & self.mask];
             let seq = slot.seq.load(Ordering::Acquire);
-            let diff = seq as isize - pos as isize;
+            let diff = seq.wrapping_sub(pos) as isize;
 
             if diff == 0 {
-                match self.enqueue_pos.compare_exchange_weak(
+                match self.head.compare_exchange_weak(
                     pos,
                     pos.wrapping_add(1),
                     Ordering::Relaxed,
@@ -102,7 +166,7 @@ impl<T> BoundedMpscQueue<T> {
             } else if diff < 0 {
                 return Err(value);
             } else {
-                pos = self.enqueue_pos.load(Ordering::Relaxed);
+                pos = self.head.load(Ordering::Relaxed);
             }
         }
     }
@@ -111,19 +175,18 @@ impl<T> BoundedMpscQueue<T> {
     /// Pops one queued item (single consumer).
     ///
     /// ### 中文
-    /// pop 一个已入队元素（单消费者）。
+    /// pop 一个元素（单消费者）。
     pub(crate) fn pop(&self) -> Option<T> {
-        let pos = self.dequeue_pos.load(Ordering::Relaxed);
+        let pos = self.tail.load(Ordering::Relaxed);
         let slot = &self.slots[pos & self.mask];
         let seq = slot.seq.load(Ordering::Acquire);
-        let diff = seq as isize - pos.wrapping_add(1) as isize;
+        let diff = seq.wrapping_sub(pos.wrapping_add(1)) as isize;
 
         if diff != 0 {
             return None;
         }
 
-        self.dequeue_pos
-            .store(pos.wrapping_add(1), Ordering::Relaxed);
+        self.tail.store(pos.wrapping_add(1), Ordering::Relaxed);
 
         let value = unsafe { (*slot.value.get()).assume_init_read() };
         slot.seq
@@ -133,6 +196,11 @@ impl<T> BoundedMpscQueue<T> {
 }
 
 impl<T> Drop for BoundedMpscQueue<T> {
+    /// ### English
+    /// Drains remaining queued items on drop.
+    ///
+    /// ### 中文
+    /// drop 时 drain 队列中仍未消费的元素。
     fn drop(&mut self) {
         while let Some(value) = self.pop() {
             drop(value);

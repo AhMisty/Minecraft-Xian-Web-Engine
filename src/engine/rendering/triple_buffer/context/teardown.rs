@@ -1,3 +1,9 @@
+//! ### English
+//! GL teardown for the triple-buffered rendering context.
+//!
+//! ### 中文
+//! 三缓冲渲染上下文的 GL 资源销毁逻辑。
+
 use crate::engine::frame::TRIPLE_BUFFER_COUNT;
 
 use super::GlfwTripleBufferRenderingContext;
@@ -31,16 +37,22 @@ impl GlfwTripleBufferRenderingContext {
             }
         }
 
-        let slots = self.slots.borrow();
-        for slot in slots.iter() {
-            slot.delete(&self.gl);
-        }
+        self.with_slots(|slots| {
+            for slot in slots.iter() {
+                slot.delete(&self.gl);
+            }
+        });
 
         self.gl.delete_renderbuffers(&[self.depth_stencil_rb]);
     }
 }
 
 impl Drop for GlfwTripleBufferRenderingContext {
+    /// ### English
+    /// Ensures GL resources are destroyed when the context is dropped.
+    ///
+    /// ### 中文
+    /// 确保在上下文 drop 时销毁 GL 资源。
     fn drop(&mut self) {
         self.destroy_gl_resources();
     }

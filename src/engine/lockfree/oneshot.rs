@@ -1,3 +1,9 @@
+//! ### English
+//! One-shot SPSC value handoff with thread parking/unparking.
+//!
+//! ### 中文
+//! 带线程 park/unpark 的一次性 SPSC 值传递。
+
 use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -50,6 +56,17 @@ unsafe impl<T: Send> Send for OneShot<T> {}
 unsafe impl<T: Send> Sync for OneShot<T> {}
 
 impl<T> OneShot<T> {
+    /// ### English
+    /// Creates a new oneshot associated with the receiver thread to be unparked on `send()`.
+    ///
+    /// #### Parameters
+    /// - `waiter`: Receiver thread handle to unpark on `send()`.
+    ///
+    /// ### 中文
+    /// 创建一个 oneshot，并绑定接收方线程句柄，用于在 `send()` 时 `unpark()` 唤醒。
+    ///
+    /// #### 参数
+    /// - `waiter`：接收方线程句柄；`send()` 后会 `unpark()` 它。
     #[inline]
     pub(crate) fn new(waiter: thread::Thread) -> Self {
         Self {
@@ -62,8 +79,14 @@ impl<T> OneShot<T> {
     /// ### English
     /// Sends the value. Returns `false` if it was already sent.
     ///
+    /// #### Parameters
+    /// - `value`: Value to send.
+    ///
     /// ### 中文
     /// 发送值；若已发送过则返回 `false`。
+    ///
+    /// #### 参数
+    /// - `value`：要发送的值。
     #[inline]
     pub(crate) fn send(&self, value: T) -> bool {
         if self
@@ -98,8 +121,14 @@ impl<T> OneShot<T> {
     /// ### English
     /// Receives the value with a timeout.
     ///
+    /// #### Parameters
+    /// - `timeout`: Maximum time to wait.
+    ///
     /// ### 中文
     /// 在超时时间内等待接收值。
+    ///
+    /// #### 参数
+    /// - `timeout`：最大等待时长。
     pub(crate) fn recv_timeout(&self, timeout: Duration) -> Option<T> {
         let deadline = Instant::now() + timeout;
         loop {
@@ -116,6 +145,11 @@ impl<T> OneShot<T> {
 }
 
 impl<T> Drop for OneShot<T> {
+    /// ### English
+    /// Drops the stored value if it was sent but never received.
+    ///
+    /// ### 中文
+    /// 若值已发送但未被接收，则在 drop 时释放该值。
     fn drop(&mut self) {
         if self.state.load(Ordering::Acquire) == 2 {
             unsafe {

@@ -1,3 +1,9 @@
+//! ### English
+//! Per-view Servo-thread state and delegate integration.
+//!
+//! ### 中文
+//! Servo 线程内的每 view 状态与 delegate 集成。
+
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -13,6 +19,11 @@ use super::super::coalesced::{
 };
 use super::super::input_dispatch::dispatch_queued_input_event;
 
+/// ### English
+/// Servo `WebViewDelegate` implementation that drives paint/present for a view.
+///
+/// ### 中文
+/// 驱动 view paint/present 的 Servo `WebViewDelegate` 实现。
 pub(super) struct Delegate {
     /// ### English
     /// Rendering context used for `paint/present` on `notify_new_frame_ready`.
@@ -23,12 +34,34 @@ pub(super) struct Delegate {
 }
 
 impl Delegate {
+    /// ### English
+    /// Creates a new delegate bound to the given rendering context.
+    ///
+    /// #### Parameters
+    /// - `rendering_context`: Rendering context used for `paint/present`.
+    ///
+    /// ### 中文
+    /// 创建一个绑定到指定渲染上下文的 delegate。
+    ///
+    /// #### 参数
+    /// - `rendering_context`：用于 `paint/present` 的渲染上下文。
     pub(super) fn new(rendering_context: Rc<GlfwTripleBufferRenderingContext>) -> Self {
         Self { rendering_context }
     }
 }
 
 impl servo::WebViewDelegate for Delegate {
+    /// ### English
+    /// Called by Servo when a new frame can be rendered/presented.
+    ///
+    /// #### Parameters
+    /// - `servo_webview`: WebView that should be painted and presented.
+    ///
+    /// ### 中文
+    /// 当 Servo 通知有新帧可渲染/呈现时调用。
+    ///
+    /// #### 参数
+    /// - `servo_webview`：需要执行 paint/present 的 WebView。
     fn notify_new_frame_ready(&self, servo_webview: servo::WebView) {
         if !self.rendering_context.is_active() {
             return;
@@ -94,7 +127,7 @@ pub(super) struct ViewEntry {
     /// Per-view pending work bitmask (coalesces wakeups and queueing).
     ///
     /// ### 中文
-    /// 每 view 的 pending work bitmask（用于合并唤醒与入队）。
+    /// 每 view 的 pending work bitmask（用于合并唤醒与 push）。
     pending: Arc<PendingWork>,
     /// ### English
     /// Last applied active flag (avoids redundant show/hide calls).
@@ -112,6 +145,33 @@ pub(super) struct ViewEntry {
 
 impl ViewEntry {
     #[allow(clippy::too_many_arguments)]
+    /// ### English
+    /// Creates a per-view entry stored only on the Servo thread.
+    ///
+    /// #### Parameters
+    /// - `token`: Monotonic token paired with the view ID.
+    /// - `servo_webview`: Servo WebView instance for this view.
+    /// - `rendering_context`: Rendering context owned by this view.
+    /// - `mouse_move`: Shared coalesced mouse-move state.
+    /// - `input_queue`: Shared bounded input queue.
+    /// - `resize`: Shared coalesced resize state.
+    /// - `load_url`: Shared coalesced URL load state.
+    /// - `pending`: Shared pending-work bitmask.
+    /// - `initial_size`: Initial view size used to seed cached state.
+    ///
+    /// ### 中文
+    /// 创建一个仅由 Servo 线程持有的 view 条目。
+    ///
+    /// #### 参数
+    /// - `token`：与 view ID 配对的单调递增 token。
+    /// - `servo_webview`：该 view 对应的 Servo WebView 实例。
+    /// - `rendering_context`：该 view 持有的渲染上下文。
+    /// - `mouse_move`：共享的鼠标移动合并状态。
+    /// - `input_queue`：共享的有界输入队列。
+    /// - `resize`：共享的 resize 合并状态。
+    /// - `load_url`：共享的 URL 合并状态。
+    /// - `pending`：共享的 pending-work 位图。
+    /// - `initial_size`：用于初始化缓存状态的初始尺寸。
     pub(super) fn new(
         token: u64,
         servo_webview: servo::WebView,
@@ -138,6 +198,11 @@ impl ViewEntry {
     }
 
     #[inline]
+    /// ### English
+    /// Applies a pending resize if present (coalesced; latest wins).
+    ///
+    /// ### 中文
+    /// 应用待处理的 resize（合并；只保留最新一次）。
     fn apply_resize(&mut self) {
         let Some(size) = self.resize.take() else {
             return;
@@ -150,6 +215,11 @@ impl ViewEntry {
     }
 
     #[inline]
+    /// ### English
+    /// Applies a pending mouse-move if present (coalesced; latest wins).
+    ///
+    /// ### 中文
+    /// 应用待处理的鼠标移动（合并；只保留最新一次）。
     fn apply_mouse_move(&self) {
         if !self.rendering_context.is_active() {
             return;
@@ -167,6 +237,11 @@ impl ViewEntry {
     }
 
     #[inline]
+    /// ### English
+    /// Drains the bounded input queue and dispatches events into Servo.
+    ///
+    /// ### 中文
+    /// drain 有界输入队列并把事件派发到 Servo。
     fn drain_input_queue(&self) {
         loop {
             let active = self.rendering_context.is_active();
@@ -189,6 +264,11 @@ impl ViewEntry {
     }
 
     #[inline]
+    /// ### English
+    /// Processes all pending work bits for this view.
+    ///
+    /// ### 中文
+    /// 处理该 view 的所有待处理 work bit。
     pub(super) fn process_pending(&mut self) {
         if !self.pending.is_marked() {
             return;

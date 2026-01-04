@@ -1,8 +1,8 @@
-/// ### English
-/// Servo runtime orchestration (public API).
-///
-/// ### 中文
-/// Servo 运行时编排（对外公开 API）。
+//! ### English
+//! Servo runtime orchestration (public API).
+//!
+//! ### 中文
+//! Servo 运行时编排（对外公开 API）。
 mod coalesced;
 mod command;
 mod input_dispatch;

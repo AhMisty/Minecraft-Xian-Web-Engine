@@ -1,3 +1,9 @@
+//! ### English
+//! Global flags stored in `SharedFrameState` (resizing / active).
+//!
+//! ### 中文
+//! `SharedFrameState` 中存储的全局标记位（resizing / active）。
+
 use std::sync::atomic::Ordering;
 
 use super::SharedFrameState;
@@ -6,8 +12,14 @@ impl SharedFrameState {
     /// ### English
     /// Marks the whole triple buffer as "resizing" (consumer should stop acquiring).
     ///
+    /// #### Parameters
+    /// - `resizing`: Whether resizing is in progress.
+    ///
     /// ### 中文
     /// 标记整个三缓冲处于 “resizing” 状态（消费者应停止 acquire）。
+    ///
+    /// #### 参数
+    /// - `resizing`：是否进入 resizing 状态。
     pub fn set_resizing(&self, resizing: bool) {
         self.frame_meta
             .flags
@@ -27,8 +39,14 @@ impl SharedFrameState {
     /// ### English
     /// Sets the active flag (used by the embedder to throttle/hide a view).
     ///
+    /// #### Parameters
+    /// - `active`: Whether the view should be active.
+    ///
     /// ### 中文
     /// 设置 active 标记（宿主用来 throttle/hide view）。
+    ///
+    /// #### 参数
+    /// - `active`：是否将 view 设为 active。
     pub fn set_active(&self, active: bool) {
         self.frame_meta
             .flags

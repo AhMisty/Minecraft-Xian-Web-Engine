@@ -1,24 +1,87 @@
-use std::ffi::OsStr;
-use std::ffi::{CStr, CString, c_char, c_int, c_void};
-use std::os::windows::ffi::OsStrExt as _;
+//! ### English
+//! Windows implementation of the minimal GLFW symbol loader.
+//!
+//! Uses an embedder-provided function table (`EmbedderGlfwApi`) instead of dynamic library lookup.
+//!
+//! ### 中文
+//! 最小 GLFW 符号 loader 的 Windows 实现。
+//!
+//! 使用宿主提供的函数表（`EmbedderGlfwApi`），不做动态库按名查找。
+
+use std::ffi::{CStr, c_char, c_int, c_void};
 use std::sync::OnceLock;
 
 #[repr(C)]
+/// ### English
+/// Opaque GLFW window type (`GLFWwindow`).
+///
+/// ### 中文
+/// 不透明 GLFW window 类型（`GLFWwindow`）。
 pub struct GLFWwindow {
+    /// ### English
+    /// Opaque zero-sized marker to prevent construction.
+    ///
+    /// ### 中文
+    /// 不透明的零大小占位字段，用于阻止外部构造。
     _private: [u8; 0],
 }
 
 #[repr(C)]
+/// ### English
+/// Opaque GLFW monitor type (`GLFWmonitor`).
+///
+/// ### 中文
+/// 不透明 GLFW monitor 类型（`GLFWmonitor`）。
 pub struct GLFWmonitor {
+    /// ### English
+    /// Opaque zero-sized marker to prevent construction.
+    ///
+    /// ### 中文
+    /// 不透明的零大小占位字段，用于阻止外部构造。
     _private: [u8; 0],
 }
 
+/// ### English
+/// Raw OpenGL function pointer type returned by `glfwGetProcAddress`.
+///
+/// ### 中文
+/// `glfwGetProcAddress` 返回的原始 OpenGL 函数指针类型。
 type GLFWglproc = *const c_void;
+/// ### English
+/// Function pointer type for `glfwGetProcAddress`.
+///
+/// ### 中文
+/// `glfwGetProcAddress` 的函数指针类型。
 type GlfwGetProcAddress = unsafe extern "C" fn(*const c_char) -> GLFWglproc;
+/// ### English
+/// Function pointer type for `glfwMakeContextCurrent`.
+///
+/// ### 中文
+/// `glfwMakeContextCurrent` 的函数指针类型。
 type GlfwMakeContextCurrent = unsafe extern "C" fn(*mut GLFWwindow);
+/// ### English
+/// Function pointer type for `glfwDefaultWindowHints`.
+///
+/// ### 中文
+/// `glfwDefaultWindowHints` 的函数指针类型。
 type GlfwDefaultWindowHints = unsafe extern "C" fn();
+/// ### English
+/// Function pointer type for `glfwWindowHint`.
+///
+/// ### 中文
+/// `glfwWindowHint` 的函数指针类型。
 type GlfwWindowHint = unsafe extern "C" fn(c_int, c_int);
+/// ### English
+/// Function pointer type for `glfwGetWindowAttrib`.
+///
+/// ### 中文
+/// `glfwGetWindowAttrib` 的函数指针类型。
 type GlfwGetWindowAttrib = unsafe extern "C" fn(*mut GLFWwindow, c_int) -> c_int;
+/// ### English
+/// Function pointer type for `glfwCreateWindow`.
+///
+/// ### 中文
+/// `glfwCreateWindow` 的函数指针类型。
 type GlfwCreateWindow = unsafe extern "C" fn(
     c_int,
     c_int,
@@ -26,29 +89,30 @@ type GlfwCreateWindow = unsafe extern "C" fn(
     *mut GLFWmonitor,
     *mut GLFWwindow,
 ) -> *mut GLFWwindow;
+/// ### English
+/// Function pointer type for `glfwDestroyWindow`.
+///
+/// ### 中文
+/// `glfwDestroyWindow` 的函数指针类型。
 type GlfwDestroyWindow = unsafe extern "C" fn(*mut GLFWwindow);
-
-#[link(name = "kernel32")]
-unsafe extern "system" {
-    fn GetModuleHandleW(lp_module_name: *const u16) -> *mut c_void;
-    fn GetProcAddress(h_module: *mut c_void, lp_proc_name: *const c_char) -> *mut c_void;
-    fn LoadLibraryW(lp_lib_file_name: *const u16) -> *mut c_void;
-}
-
-fn to_wide_nul(s: &str) -> Vec<u16> {
-    OsStr::new(s).encode_wide().chain(Some(0)).collect()
-}
-
-unsafe fn get_symbol<T>(module: *mut c_void, name: &CStr) -> Option<T> {
-    let addr = unsafe { GetProcAddress(module, name.as_ptr()) };
-    if addr.is_null() {
-        return None;
-    }
-    Some(unsafe { std::mem::transmute_copy(&addr) })
-}
 
 static EMBEDDER_GLFW_API: OnceLock<GlfwApi> = OnceLock::new();
 
+/// ### English
+/// Installs the embedder-provided GLFW function table for this process.
+///
+/// This is a one-time installation backed by `OnceLock`; repeated calls return an error.
+///
+/// #### Parameters
+/// - `api`: Embedder function pointer table for required GLFW symbols.
+///
+/// ### 中文
+/// 为当前进程安装宿主提供的 GLFW 函数表。
+///
+/// 该安装由 `OnceLock` 保证只执行一次；重复调用会返回错误。
+///
+/// #### 参数
+/// - `api`：宿主提供的 GLFW 必需符号函数指针表。
 pub(super) fn install_embedder_glfw_api(api: super::EmbedderGlfwApi) -> Result<(), String> {
     if api.glfw_get_proc_address == 0 {
         return Err("EmbedderGlfwApi.glfw_get_proc_address is NULL".to_string());
@@ -103,6 +167,11 @@ pub(super) fn install_embedder_glfw_api(api: super::EmbedderGlfwApi) -> Result<(
 }
 
 #[derive(Clone, Copy)]
+/// ### English
+/// Loaded minimal GLFW API used by the engine (context control + proc loading).
+///
+/// ### 中文
+/// 引擎使用的最小 GLFW API（上下文控制 + 函数指针加载）。
 pub struct GlfwApi {
     /// ### English
     /// Function pointer: `glfwGetProcAddress`.
@@ -152,83 +221,18 @@ impl GlfwApi {
     /// ### English
     /// Loads the minimal subset of GLFW symbols required by this crate.
     ///
-    /// If an embedder-provided function table was installed via
-    /// `xian_web_engine_set_glfw_api`, it is used preferentially.
-    ///
-    /// The embedder is expected to have already loaded GLFW; we try common DLL names and
-    /// fall back to `LoadLibraryW`.
+    /// An embedder-provided function table must be installed via
+    /// `xian_web_engine_set_glfw_api` before calling this.
     ///
     /// ### 中文
     /// 加载本 crate 所需的最小 GLFW 符号集合。
     ///
-    /// 如果宿主通过 `xian_web_engine_set_glfw_api` 安装了函数表，则会优先使用该表。
-    ///
-    /// 宿主通常已加载 GLFW；这里会尝试常见 DLL 名称，并在需要时回退到 `LoadLibraryW`。
+    /// 调用前必须由宿主通过 `xian_web_engine_set_glfw_api` 安装函数表。
+    #[inline]
     pub fn load() -> Result<Self, String> {
-        if let Some(api) = EMBEDDER_GLFW_API.get() {
-            return Ok(*api);
-        }
-
-        let module = unsafe {
-            let glfw3 = to_wide_nul("glfw3.dll");
-            let glfw = to_wide_nul("glfw.dll");
-
-            let mut module = GetModuleHandleW(glfw3.as_ptr());
-            if module.is_null() {
-                module = GetModuleHandleW(glfw.as_ptr());
-            }
-            if module.is_null() {
-                module = LoadLibraryW(glfw3.as_ptr());
-            }
-            if module.is_null() {
-                module = LoadLibraryW(glfw.as_ptr());
-            }
-            if module.is_null() {
-                return Err(
-                    "Failed to load glfw3.dll/glfw.dll; ensure GLFW is loaded by the embedder (or install an embedder function table via xian_web_engine_set_glfw_api)"
-                        .to_string(),
-                );
-            }
-            module
-        };
-
-        let glfw_get_proc_address: GlfwGetProcAddress = unsafe {
-            get_symbol(module, c"glfwGetProcAddress")
-                .ok_or_else(|| "glfwGetProcAddress not found".to_string())?
-        };
-        let glfw_make_context_current: GlfwMakeContextCurrent = unsafe {
-            get_symbol(module, c"glfwMakeContextCurrent")
-                .ok_or_else(|| "glfwMakeContextCurrent not found".to_string())?
-        };
-        let glfw_default_window_hints: GlfwDefaultWindowHints = unsafe {
-            get_symbol(module, c"glfwDefaultWindowHints")
-                .ok_or_else(|| "glfwDefaultWindowHints not found".to_string())?
-        };
-        let glfw_window_hint: GlfwWindowHint = unsafe {
-            get_symbol(module, c"glfwWindowHint")
-                .ok_or_else(|| "glfwWindowHint not found".to_string())?
-        };
-        let glfw_get_window_attrib: GlfwGetWindowAttrib = unsafe {
-            get_symbol(module, c"glfwGetWindowAttrib")
-                .ok_or_else(|| "glfwGetWindowAttrib not found".to_string())?
-        };
-        let glfw_create_window: GlfwCreateWindow = unsafe {
-            get_symbol(module, c"glfwCreateWindow")
-                .ok_or_else(|| "glfwCreateWindow not found".to_string())?
-        };
-        let glfw_destroy_window: GlfwDestroyWindow = unsafe {
-            get_symbol(module, c"glfwDestroyWindow")
-                .ok_or_else(|| "glfwDestroyWindow not found".to_string())?
-        };
-
-        Ok(Self {
-            glfw_get_proc_address,
-            glfw_make_context_current,
-            glfw_default_window_hints,
-            glfw_window_hint,
-            glfw_get_window_attrib,
-            glfw_create_window,
-            glfw_destroy_window,
+        EMBEDDER_GLFW_API.get().copied().ok_or_else(|| {
+            "Embedder GLFW API is not installed; call xian_web_engine_set_glfw_api before xian_web_engine_create"
+                .to_string()
         })
     }
 
@@ -237,6 +241,7 @@ impl GlfwApi {
     ///
     /// ### 中文
     /// 将 `window` 设为调用线程的 current 上下文。
+    #[inline]
     pub unsafe fn make_current(&self, window: *mut GLFWwindow) {
         unsafe { (self.glfw_make_context_current)(window) };
     }
@@ -244,8 +249,15 @@ impl GlfwApi {
     /// ### English
     /// Loads an OpenGL function pointer via GLFW.
     ///
+    /// #### Parameters
+    /// - `name`: NUL-terminated proc name.
+    ///
     /// ### 中文
     /// 通过 GLFW 加载 OpenGL 函数指针。
+    ///
+    /// #### 参数
+    /// - `name`：以 NUL 结尾的函数名。
+    #[inline]
     pub unsafe fn get_proc_address(&self, name: &CStr) -> *const c_void {
         unsafe { (self.glfw_get_proc_address)(name.as_ptr()) }
     }
@@ -253,8 +265,15 @@ impl GlfwApi {
     /// ### English
     /// Destroys a GLFW window created by this loader.
     ///
+    /// #### Parameters
+    /// - `window`: Window pointer to destroy.
+    ///
     /// ### 中文
     /// 销毁由本 loader 创建的 GLFW window。
+    ///
+    /// #### 参数
+    /// - `window`：需要销毁的 window 指针。
+    #[inline]
     pub unsafe fn destroy_window(&self, window: *mut GLFWwindow) {
         unsafe { (self.glfw_destroy_window)(window) };
     }
@@ -323,8 +342,7 @@ impl GlfwApi {
             unsafe { (self.glfw_window_hint)(GLFW_CONTEXT_CREATION_API, shared_creation_api) };
         }
 
-        let title = CString::new("xian_web_engine-offscreen")
-            .map_err(|_| "Failed to build offscreen window title".to_string())?;
+        let title = c"xian_web_engine-offscreen";
         let window =
             unsafe { (self.glfw_create_window)(1, 1, title.as_ptr(), std::ptr::null_mut(), share) };
         unsafe { (self.glfw_default_window_hints)() };
@@ -338,5 +356,15 @@ impl GlfwApi {
     }
 }
 
+/// ### English
+/// Raw window pointer type used by this crate (alias for `*mut GLFWwindow`).
+///
+/// ### 中文
+/// 本 crate 使用的 window 裸指针类型（`*mut GLFWwindow` 的别名）。
 pub type GlfwWindowPtr = *mut GLFWwindow;
+/// ### English
+/// Public alias for the loaded GLFW API type.
+///
+/// ### 中文
+/// 已加载 GLFW API 类型的公开别名。
 pub type LoadedGlfwApi = GlfwApi;

@@ -1,14 +1,16 @@
-/// ### English
-/// C ABI surface for `xian_web_engine`.
-/// All exported symbols are `extern "C"` functions; structs are `#[repr(C)]`.
-/// Strings passed from Java/Panama must be NUL-terminated UTF-8 (C string); they will be
-/// validated as UTF-8 and will be truncated at the first NUL byte.
-///
-/// ### 中文
-/// `xian_web_engine` 的 C ABI 接口层。
-/// 所有导出符号均为 `extern "C"` 函数；结构体使用 `#[repr(C)]`。
-/// Java/Panama 传入的字符串必须是以 NUL 结尾的 UTF-8（C 字符串）；Rust 会校验 UTF-8，
-/// 且在遇到第一个 NUL 字节处截断。
+//! ### English
+//! C ABI surface for `xian_web_engine`.
+//!
+//! All exported symbols are `extern "C"` functions; structs are `#[repr(C)]`.
+//! Strings passed from Java/Panama must be NUL-terminated UTF-8 (C string); they will be
+//! validated as UTF-8 and will be truncated at the first NUL byte.
+//!
+//! ### 中文
+//! `xian_web_engine` 的 C ABI 接口层。
+//!
+//! 所有导出符号均为 `extern "C"` 函数；结构体使用 `#[repr(C)]`。
+//! Java/Panama 传入的字符串必须是以 NUL 结尾的 UTF-8（C 字符串）；Rust 会校验 UTF-8，
+//! 且在遇到第一个 NUL 字节处截断。
 mod abi;
 mod engine;
 mod frame;
@@ -44,10 +46,10 @@ pub struct XianWebEngine {
 /// 不透明 view 句柄（宿主可通过指针线程安全使用）。
 pub struct XianWebEngineView {
     /// ### English
-    /// Thread-safe handle that sends commands / enqueues work to the dedicated Servo thread.
+    /// Thread-safe handle that sends commands / queues work to the dedicated Servo thread.
     ///
     /// ### 中文
-    /// 线程安全句柄：向独立 Servo 线程发送命令/入队工作。
+    /// 线程安全句柄：向独立 Servo 线程发送命令/排队工作。
     handle: WebEngineViewHandle,
 }
 
@@ -76,6 +78,22 @@ pub struct XianWebEngineFrame {
     /// The embedder should wait on this fence before sampling the texture to avoid reading an
     /// incomplete frame. If it is `0`, the embedder must provide its own synchronization if needed.
     ///
+    /// Recommended (GPU wait, does not block the Java thread):
+    /// ```c
+    /// if (frame.producer_fence != 0) {
+    ///   glWaitSync((GLsync)frame.producer_fence, 0, GL_TIMEOUT_IGNORED);
+    /// }
+    /// // ...sample frame.texture_id...
+    /// ```
+    ///
+    /// Optional (CPU wait, blocks the Java thread; usually only for debugging):
+    /// ```c
+    /// if (frame.producer_fence != 0) {
+    ///   // GL_SYNC_FLUSH_COMMANDS_BIT only flushes the *current* context.
+    ///   glClientWaitSync((GLsync)frame.producer_fence, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000ULL);
+    /// }
+    /// ```
+    ///
     /// Ownership: this sync object is owned by Rust; the embedder may wait on it, but must NOT
     /// delete it (Rust will delete it when the slot is recycled/destroyed).
     ///
@@ -83,6 +101,22 @@ pub struct XianWebEngineFrame {
     /// 生产者 fence 句柄（`GLsync` 转为 `u64`），不可用则为 0。
     ///
     /// 宿主在采样该纹理前应等待该 fence，以避免读到未完成帧；若该值为 `0`，则宿主需自行保证同步。
+    ///
+    /// 推荐（GPU 等待，不阻塞 Java 线程）：
+    /// ```c
+    /// if (frame.producer_fence != 0) {
+    ///   glWaitSync((GLsync)frame.producer_fence, 0, GL_TIMEOUT_IGNORED);
+    /// }
+    /// // ...采样 frame.texture_id...
+    /// ```
+    ///
+    /// 可选（CPU 等待，会阻塞 Java 线程；通常仅用于调试）：
+    /// ```c
+    /// if (frame.producer_fence != 0) {
+    ///   // GL_SYNC_FLUSH_COMMANDS_BIT 只会 flush “当前”上下文的命令。
+    ///   glClientWaitSync((GLsync)frame.producer_fence, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000ULL);
+    /// }
+    /// ```
     ///
     /// 所有权：该 sync 对象由 Rust 持有；宿主可等待它，但不要自行删除（Rust 会在槽位复用/销毁时删除）。
     pub producer_fence: u64,
@@ -105,9 +139,20 @@ pub struct XianWebEngineFrame {
 ///
 /// ### 中文
 /// `xian_web_engine` 的 C ABI 版本号。
-const XIAN_WEB_ENGINE_ABI_VERSION: u32 = 1;
+const XIAN_WEB_ENGINE_ABI_VERSION: u32 = 2;
 
 impl From<AcquiredFrame> for XianWebEngineFrame {
+    /// ### English
+    /// Converts an internal `AcquiredFrame` into the C ABI `XianWebEngineFrame`.
+    ///
+    /// #### Parameters
+    /// - `value`: Source frame payload.
+    ///
+    /// ### 中文
+    /// 将内部 `AcquiredFrame` 转换为 C ABI 的 `XianWebEngineFrame`。
+    ///
+    /// #### 参数
+    /// - `value`：源帧数据。
     fn from(value: AcquiredFrame) -> Self {
         Self {
             slot: value.slot as u32,
@@ -119,6 +164,21 @@ impl From<AcquiredFrame> for XianWebEngineFrame {
     }
 }
 
+/// ### English
+/// Converts an optional NUL-terminated UTF-8 C string into a `PathBuf`.
+///
+/// Returns `None` for NULL pointers, invalid UTF-8, or empty strings.
+///
+/// # Safety
+/// `ptr` must be valid and point to a NUL-terminated string for the duration of the call.
+///
+/// ### 中文
+/// 将可选的 NUL 结尾 UTF-8 C 字符串转换为 `PathBuf`。
+///
+/// 对 NULL 指针、UTF-8 非法或空字符串返回 `None`。
+///
+/// # Safety
+/// `ptr` 在本次调用期间必须有效，并指向以 NUL 结尾的字符串。
 unsafe fn cstr_to_path(ptr: *const c_char) -> Option<PathBuf> {
     if ptr.is_null() {
         return None;

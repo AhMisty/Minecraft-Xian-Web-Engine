@@ -1,3 +1,9 @@
+//! ### English
+//! Per-slot atomic storage for the triple-buffered frame state.
+//!
+//! ### 中文
+//! 三缓冲帧状态中“每槽位”的原子存储结构。
+
 use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64};
 
 use dpi::PhysicalSize;
@@ -5,6 +11,11 @@ use dpi::PhysicalSize;
 use super::SLOT_FREE;
 
 #[repr(C, align(64))]
+/// ### English
+/// Per-slot atomic fields used by `SharedFrameState` (aligned to reduce false sharing).
+///
+/// ### 中文
+/// `SharedFrameState` 使用的每槽位原子字段（按 cache line 对齐以降低伪共享）。
 pub(super) struct SlotAtomics {
     /// ### English
     /// Slot state (`SLOT_*`).
@@ -51,6 +62,17 @@ pub(super) struct SlotAtomics {
 }
 
 impl SlotAtomics {
+    /// ### English
+    /// Creates a slot initialized to `SLOT_FREE` with the given initial size.
+    ///
+    /// #### Parameters
+    /// - `initial_size`: Initial cached size in pixels.
+    ///
+    /// ### 中文
+    /// 创建一个初始化为 `SLOT_FREE` 的槽位，并设置初始尺寸。
+    ///
+    /// #### 参数
+    /// - `initial_size`：初始缓存尺寸（像素）。
     pub(super) fn new(initial_size: PhysicalSize<u32>) -> Self {
         Self {
             state: AtomicU8::new(SLOT_FREE),

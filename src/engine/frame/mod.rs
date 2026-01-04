@@ -1,10 +1,13 @@
-/// ### English
-/// Lock-free triple-buffer frame state shared between the Servo thread (producer) and Java thread
-/// (consumer). Uses atomics to avoid OS locks on the hot path.
-///
-/// ### 中文
-/// Servo 线程（生产者）与 Java 线程（消费者）共享的无锁三缓冲帧状态。
-/// 热路径使用原子操作避免系统锁。
+//! ### English
+//! Lock-free triple-buffer frame state shared between the Servo thread (producer) and Java thread
+//! (consumer).
+//!
+//! Uses atomics to avoid OS locks on the hot path.
+//!
+//! ### 中文
+//! Servo 线程（生产者）与 Java 线程（消费者）共享的无锁三缓冲帧状态。
+//!
+//! 热路径使用原子操作避免系统锁。
 mod shared_state;
 mod slot;
 

@@ -1,8 +1,8 @@
-/// ### English
-/// Translation from ABI input events to Servo input events.
-///
-/// ### 中文
-/// ABI 输入事件到 Servo 输入事件的转换与派发。
+//! ### English
+//! Translation from ABI input events to Servo input events.
+//!
+//! ### 中文
+//! ABI 输入事件到 Servo 输入事件的转换与派发。
 use crate::engine::input_types::{
     XIAN_WEB_ENGINE_INPUT_KIND_KEY, XIAN_WEB_ENGINE_INPUT_KIND_MOUSE_BUTTON,
     XIAN_WEB_ENGINE_INPUT_KIND_WHEEL, XianWebEngineInputEvent,
@@ -14,9 +14,17 @@ use super::keyboard::{glfw_key_to_code, glfw_key_to_key};
 /// Dispatches one queued input event into Servo's `WebView`.
 /// Called on the Servo thread only (single consumer).
 ///
+/// #### Parameters
+/// - `servo_webview`: Target Servo `WebView`.
+/// - `raw`: ABI input event payload.
+///
 /// ### 中文
-/// 将一个入队的输入事件派发给 Servo 的 `WebView`。
+/// 将一个输入事件派发给 Servo 的 `WebView`。
 /// 仅在 Servo 线程调用（单消费者）。
+///
+/// #### 参数
+/// - `servo_webview`：目标 Servo `WebView`。
+/// - `raw`：ABI 输入事件载荷。
 pub(super) fn dispatch_queued_input_event(
     servo_webview: &servo::WebView,
     raw: XianWebEngineInputEvent,

@@ -1,9 +1,9 @@
-/// ### English
-/// Triple-buffered offscreen rendering context for Servo (OpenGL).
-///
-/// ### 中文
-/// Servo 的三缓冲离屏渲染上下文（OpenGL）。
-use std::cell::{Cell, RefCell};
+//! ### English
+//! Triple-buffered offscreen rendering context for Servo (OpenGL).
+//!
+//! ### 中文
+//! Servo 的三缓冲离屏渲染上下文（OpenGL）。
+use std::cell::{Cell, UnsafeCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -27,13 +27,53 @@ mod teardown;
 /// ### 中文
 /// `GlfwTripleBufferRenderingContext` 的初始化参数。
 pub struct GlfwTripleBufferContextInit {
+    /// ### English
+    /// Shared GLFW context wrapper owned by the Servo thread.
+    ///
+    /// ### 中文
+    /// 由 Servo 线程持有的共享 GLFW 上下文封装。
     pub shared_ctx: Rc<GlfwSharedContext>,
+    /// ### English
+    /// Initial render surface size (clamped by caller to be non-zero).
+    ///
+    /// ### 中文
+    /// 初始渲染表面尺寸（由调用方保证非 0）。
     pub initial_size: PhysicalSize<u32>,
+    /// ### English
+    /// Shared triple-buffer frame state exposed to the embedder.
+    ///
+    /// ### 中文
+    /// 暴露给宿主的三缓冲共享帧状态。
     pub shared: Arc<SharedFrameState>,
+    /// ### English
+    /// Vsync callback queue used to drive Servo refresh from the embedder side.
+    ///
+    /// ### 中文
+    /// 用于由宿主侧驱动 Servo refresh 的 vsync 回调队列。
     pub vsync_queue: Arc<VsyncCallbackQueue>,
+    /// ### English
+    /// Target FPS for fixed-interval refresh (0 means external-vsync mode).
+    ///
+    /// ### 中文
+    /// 固定间隔 refresh 的目标 FPS（0 表示外部 vsync 模式）。
     pub target_fps: u32,
+    /// ### English
+    /// Unsafe mode: ignore consumer fences provided by the embedder.
+    ///
+    /// ### 中文
+    /// 不安全模式：忽略宿主提供的 consumer fence。
     pub unsafe_no_consumer_fence: bool,
+    /// ### English
+    /// Unsafe mode: skip producer fences for new frames.
+    ///
+    /// ### 中文
+    /// 不安全模式：跳过新帧的生产者 fence。
     pub unsafe_no_producer_fence: bool,
+    /// ### English
+    /// Optional shared refresh scheduler (used when `target_fps != 0`).
+    ///
+    /// ### 中文
+    /// 可选的共享 refresh 调度器（当 `target_fps != 0` 时使用）。
     pub refresh_scheduler: Option<Arc<RefreshScheduler>>,
 }
 
@@ -84,7 +124,7 @@ pub struct GlfwTripleBufferRenderingContext {
     ///
     /// ### 中文
     /// 三缓冲槽位存储（每槽位一个 FBO + 纹理）。
-    pub(super) slots: RefCell<[TripleBufferSlot; TRIPLE_BUFFER_COUNT]>,
+    pub(super) slots: UnsafeCell<[TripleBufferSlot; TRIPLE_BUFFER_COUNT]>,
     /// ### English
     /// Index of the current producer-owned back slot.
     ///
@@ -145,4 +185,42 @@ pub struct GlfwTripleBufferRenderingContext {
     /// ### 中文
     /// 缓存的 sRGB 状态，避免重复切换 GL 状态。
     pub(super) srgb_enabled: Cell<bool>,
+}
+
+impl GlfwTripleBufferRenderingContext {
+    /// ### English
+    /// Runs `f` with a shared reference to the slot array.
+    ///
+    /// This uses `UnsafeCell` instead of `RefCell` because the rendering context is strictly
+    /// single-threaded (Servo thread) and slot access is serialized, avoiding runtime borrow checks.
+    ///
+    /// ### 中文
+    /// 以共享引用的方式访问槽位数组并执行 `f`。
+    ///
+    /// 由于渲染上下文严格单线程（Servo 线程）使用，槽位访问天然串行，因此使用 `UnsafeCell`
+    /// 替代 `RefCell` 以避免运行时借用检查开销。
+    #[inline]
+    pub(super) fn with_slots<R>(
+        &self,
+        f: impl for<'a> FnOnce(&'a [TripleBufferSlot; TRIPLE_BUFFER_COUNT]) -> R,
+    ) -> R {
+        f(unsafe { &*self.slots.get() })
+    }
+
+    /// ### English
+    /// Runs `f` with a mutable reference to the slot array.
+    ///
+    /// Callers must not re-enter any slot-accessing code while `f` is running.
+    ///
+    /// ### 中文
+    /// 以可变引用的方式访问槽位数组并执行 `f`。
+    ///
+    /// 调用方必须保证在 `f` 执行期间不会重入任何再次访问槽位的逻辑。
+    #[inline]
+    pub(super) fn with_slots_mut<R>(
+        &self,
+        f: impl for<'a> FnOnce(&'a mut [TripleBufferSlot; TRIPLE_BUFFER_COUNT]) -> R,
+    ) -> R {
+        f(unsafe { &mut *self.slots.get() })
+    }
 }

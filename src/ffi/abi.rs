@@ -1,3 +1,9 @@
+//! ### English
+//! C ABI version query.
+//!
+//! ### 中文
+//! C ABI 版本查询接口。
+
 #[unsafe(no_mangle)]
 /// ### English
 /// Returns the C ABI version.

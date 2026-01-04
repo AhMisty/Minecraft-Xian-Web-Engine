@@ -1,3 +1,9 @@
+//! ### English
+//! C ABI bindings for sending input events to a view.
+//!
+//! ### 中文
+//! 向 view 发送输入事件的 C ABI 绑定。
+
 use crate::engine::{
     XIAN_WEB_ENGINE_INPUT_KIND_KEY, XIAN_WEB_ENGINE_INPUT_KIND_MOUSE_BUTTON,
     XIAN_WEB_ENGINE_INPUT_KIND_MOUSE_MOVE, XIAN_WEB_ENGINE_INPUT_KIND_WHEEL,
@@ -69,7 +75,7 @@ pub unsafe extern "C" fn xian_web_engine_view_send_input_events(
                 }
 
                 let segment = &event_slice[start..index];
-                let pushed = handle.try_enqueue_input_events(segment);
+                let pushed = handle.push_input_events(segment);
                 accepted += pushed as u32;
                 if pushed > 0 {
                     input_pending = true;

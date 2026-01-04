@@ -1,3 +1,9 @@
+//! ### English
+//! C ABI bindings for frame acquisition and release.
+//!
+//! ### 中文
+//! 帧获取与释放相关的 C ABI 绑定。
+
 use super::{XianWebEngineFrame, XianWebEngineView};
 
 #[unsafe(no_mangle)]

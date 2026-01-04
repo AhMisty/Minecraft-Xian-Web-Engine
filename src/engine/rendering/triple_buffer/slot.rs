@@ -1,8 +1,19 @@
+//! ### English
+//! Per-slot GL resources for triple-buffered offscreen rendering (FBO + texture).
+//!
+//! ### 中文
+//! 三缓冲离屏渲染的每槽位 GL 资源（FBO + 纹理）。
+
 use std::rc::Rc;
 
 use dpi::PhysicalSize;
 use gleam::gl::{self, Gl};
 
+/// ### English
+/// One triple-buffer slot containing an offscreen FBO and its color texture.
+///
+/// ### 中文
+/// 三缓冲的一个槽位：包含离屏 FBO 及其颜色纹理。
 pub(super) struct TripleBufferSlot {
     /// ### English
     /// Offscreen framebuffer object ID.
@@ -25,6 +36,23 @@ pub(super) struct TripleBufferSlot {
 }
 
 impl TripleBufferSlot {
+    /// ### English
+    /// Creates a new slot (FBO + texture) and attaches the shared depth-stencil renderbuffer.
+    ///
+    /// #### Parameters
+    /// - `gl`: GL API used to create resources.
+    /// - `depth_stencil_rb`: Shared depth-stencil renderbuffer ID to attach.
+    /// - `size`: Initial texture size.
+    /// - `internal_format`: Color internal format (sRGB or linear RGBA).
+    ///
+    /// ### 中文
+    /// 创建一个新槽位（FBO + 纹理），并绑定共享的深度/模板 renderbuffer。
+    ///
+    /// #### 参数
+    /// - `gl`：用于创建资源的 GL API。
+    /// - `depth_stencil_rb`：需要绑定的共享深度/模板 renderbuffer ID。
+    /// - `size`：初始纹理尺寸。
+    /// - `internal_format`：颜色内部格式（sRGB 或线性 RGBA）。
     pub(super) fn new(
         gl: &Rc<dyn Gl>,
         depth_stencil_rb: gl::GLuint,
@@ -79,6 +107,21 @@ impl TripleBufferSlot {
         }
     }
 
+    /// ### English
+    /// Resizes the color texture storage if the size changed.
+    ///
+    /// #### Parameters
+    /// - `gl`: GL API used to resize resources.
+    /// - `new_size`: New texture size.
+    /// - `internal_format`: Color internal format (sRGB or linear RGBA).
+    ///
+    /// ### 中文
+    /// 当尺寸变化时，调整颜色纹理的存储大小。
+    ///
+    /// #### 参数
+    /// - `gl`：用于调整资源的 GL API。
+    /// - `new_size`：新的纹理尺寸。
+    /// - `internal_format`：颜色内部格式（sRGB 或线性 RGBA）。
     pub(super) fn resize(
         &mut self,
         gl: &Rc<dyn Gl>,
@@ -106,15 +149,54 @@ impl TripleBufferSlot {
         self.size = new_size;
     }
 
+    /// ### English
+    /// Deletes the GL resources owned by this slot.
+    ///
+    /// #### Parameters
+    /// - `gl`: GL API used to delete resources.
+    ///
+    /// ### 中文
+    /// 删除该槽位持有的 GL 资源。
+    ///
+    /// #### 参数
+    /// - `gl`：用于删除资源的 GL API。
     pub(super) fn delete(&self, gl: &Rc<dyn Gl>) {
         gl.delete_textures(&[self.texture_id]);
         gl.delete_framebuffers(&[self.framebuffer_id]);
     }
 
+    /// ### English
+    /// Binds this slot's framebuffer for rendering or readback.
+    ///
+    /// #### Parameters
+    /// - `gl`: GL API used to bind the framebuffer.
+    ///
+    /// ### 中文
+    /// 绑定该槽位的 framebuffer，用于渲染或读回。
+    ///
+    /// #### 参数
+    /// - `gl`：用于绑定 framebuffer 的 GL API。
     pub(super) fn bind(&self, gl: &Rc<dyn Gl>) {
         gl.bind_framebuffer(gl::FRAMEBUFFER, self.framebuffer_id);
     }
 
+    /// ### English
+    /// Reads pixels from this slot's framebuffer into an RGBA image.
+    ///
+    /// The image is vertically flipped to match the expected coordinate origin.
+    ///
+    /// #### Parameters
+    /// - `gl`: GL API used to read pixels.
+    /// - `source_rectangle`: Rectangle in device pixels to read back.
+    ///
+    /// ### 中文
+    /// 从该槽位的 framebuffer 读回像素并生成 RGBA 图像。
+    ///
+    /// 图像会做一次垂直翻转，以匹配期望的坐标原点方向。
+    ///
+    /// #### 参数
+    /// - `gl`：用于读回像素的 GL API。
+    /// - `source_rectangle`：需要读回的设备像素矩形区域。
     pub(super) fn read_to_image(
         &self,
         gl: &Rc<dyn Gl>,
@@ -132,7 +214,6 @@ impl TripleBufferSlot {
             gl::UNSIGNED_BYTE,
         );
 
-        // 垂直翻转图像（纹理坐标原点方向不同）。
         let source_rectangle = source_rectangle.to_usize();
         let stride = source_rectangle.width() * 4;
         let height = source_rectangle.height();
