@@ -116,7 +116,17 @@ impl Ord for ScheduledTask {
 /// - 热路径：有界 ring（无分配）。
 /// - 冷路径：无界 MPSC 溢出队列（仅在少量突发时分配）。
 struct SchedulerQueue {
+    /// ### English
+    /// Hot-path bounded ring buffer (no allocations when not full).
+    ///
+    /// ### 中文
+    /// 热路径：有界 ring buffer（未满时无分配）。
     ring: BoundedMpscQueue<ScheduledTask>,
+    /// ### English
+    /// Cold-path unbounded overflow queue (used when the ring is full).
+    ///
+    /// ### 中文
+    /// 冷路径：无界溢出队列（ring 满时使用）。
     overflow: MpscQueue<ScheduledTask>,
 }
 
@@ -191,35 +201,34 @@ impl RefreshScheduler {
     /// ### English
     /// Creates a scheduler backed by a single worker thread.
     ///
+    /// Returns an error if the worker thread cannot be spawned.
+    ///
     /// ### 中文
     /// 创建一个由单线程驱动的调度器。
-    pub fn new() -> Arc<Self> {
+    ///
+    /// 若无法创建工作线程则返回错误。
+    pub fn try_new() -> Result<Arc<Self>, String> {
         let queue = Arc::new(SchedulerQueue::new());
         let wake_pending = Arc::new(AtomicBool::new(false));
         let shutdown = Arc::new(AtomicBool::new(false));
-        let queue_for_thread = queue.clone();
-        let wake_pending_for_thread = wake_pending.clone();
-        let shutdown_for_thread = shutdown.clone();
+
+        let queue_thread = queue.clone();
+        let wake_pending_thread = wake_pending.clone();
+        let shutdown_thread = shutdown.clone();
         let join = thread::Builder::new()
-            .name("XianRefreshDriver".to_string())
-            .spawn(move || {
-                run_scheduler(
-                    queue_for_thread,
-                    wake_pending_for_thread,
-                    shutdown_for_thread,
-                )
-            })
-            .expect("failed to spawn refresh scheduler thread");
+            .name("XianRefreshThread".to_string())
+            .spawn(move || run_scheduler(queue_thread, wake_pending_thread, shutdown_thread))
+            .map_err(|err| format!("Failed to spawn refresh thread: {err}"))?;
         let thread_handle = join.thread().clone();
 
-        Arc::new(Self {
+        Ok(Arc::new(Self {
             queue,
             wake_pending,
             shutdown,
             next_seq: AtomicU64::new(1),
             thread: thread_handle,
             join: Some(join),
-        })
+        }))
     }
 
     /// ### English
@@ -270,7 +279,7 @@ impl Drop for RefreshScheduler {
 /// Scheduler thread main loop.
 ///
 /// #### Parameters
-/// - `rx`: Lock-free message queue into the scheduler thread.
+/// - `inbox`: Lock-free message queue into the scheduler thread.
 /// - `wake_pending`: Coalesced wake flag shared with the producers.
 /// - `shutdown`: Shutdown flag shared with the producers.
 ///
@@ -278,30 +287,32 @@ impl Drop for RefreshScheduler {
 /// 调度线程主循环。
 ///
 /// #### 参数
-/// - `rx`：发送到调度线程的无锁消息队列。
+/// - `inbox`：发送到调度线程的无锁消息队列。
 /// - `wake_pending`：与生产者共享的合并唤醒标记。
 /// - `shutdown`：与生产者共享的 shutdown 标记。
 fn run_scheduler(
-    rx: Arc<SchedulerQueue>,
+    inbox: Arc<SchedulerQueue>,
     wake_pending: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
 ) {
-    let mut queue: BinaryHeap<ScheduledTask> = BinaryHeap::new();
+    let mut heap: BinaryHeap<ScheduledTask> = BinaryHeap::new();
 
     loop {
-        while let Some(task) = rx.pop() {
-            queue.push(task);
+        while let Some(task) = inbox.pop() {
+            heap.push(task);
         }
         if shutdown.load(AtomicOrdering::Acquire) {
             return;
         }
 
         let now = Instant::now();
-        while let Some(next) = queue.peek() {
+        while let Some(next) = heap.peek() {
             if next.deadline > now {
                 break;
             }
-            let task = queue.pop().expect("queue had a peeked item");
+            let Some(task) = heap.pop() else {
+                break;
+            };
             (task.callback)();
             if shutdown.load(AtomicOrdering::Acquire) {
                 return;
@@ -316,7 +327,7 @@ fn run_scheduler(
             continue;
         }
 
-        let timeout = queue
+        let timeout = heap
             .peek()
             .map(|task| task.deadline.saturating_duration_since(Instant::now()));
         match timeout {

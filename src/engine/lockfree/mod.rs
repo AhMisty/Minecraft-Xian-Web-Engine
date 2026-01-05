@@ -9,12 +9,14 @@
 //! 这些工具面向热路径设计（原子操作、有界分配、短自旋/让出调度退避）。
 mod backoff;
 mod bounded_mpsc;
+mod bounded_ring;
 mod coalesced;
 mod mpsc;
 mod oneshot;
 
 pub(crate) use backoff::Backoff;
 pub(crate) use bounded_mpsc::BoundedMpscQueue;
+pub(crate) use bounded_ring::{BoundedRingSlot, bounded_mpsc_pop, bounded_mpsc_try_push};
 pub(crate) use coalesced::CoalescedBox;
 pub(crate) use mpsc::MpscQueue;
 pub(crate) use oneshot::OneShot;

@@ -8,6 +8,52 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use dpi::PhysicalSize;
 
+#[inline]
+/// ### English
+/// Stores the latest packed value and marks it as pending (latest-wins).
+///
+/// Returns `true` iff this call transitions from "not pending" to "pending".
+///
+/// #### Parameters
+/// - `pending`: Pending flag (`0` = none, `1` = pending).
+/// - `packed`: Packed payload storage.
+/// - `value`: Latest packed payload value to store.
+///
+/// ### 中文
+/// 写入最新的打包值并标记为 pending（latest-wins）。
+///
+/// 仅当本次调用把状态从“非 pending”切换为“pending”时返回 `true`。
+///
+/// #### 参数
+/// - `pending`：pending 标记（`0` = 无，`1` = 有）。
+/// - `packed`：打包载荷存储。
+/// - `value`：要写入的最新打包载荷值。
+fn coalesced_set(pending: &AtomicU8, packed: &AtomicU64, value: u64) -> bool {
+    packed.store(value, Ordering::Relaxed);
+    pending.swap(1, Ordering::Release) == 0
+}
+
+#[inline]
+/// ### English
+/// Takes the latest packed value if pending, clearing the pending flag.
+///
+/// #### Parameters
+/// - `pending`: Pending flag (`0` = none, `1` = pending).
+/// - `packed`: Packed payload storage.
+///
+/// ### 中文
+/// 若处于 pending，则取出最新打包值并清除 pending 标记。
+///
+/// #### 参数
+/// - `pending`：pending 标记（`0` = 无，`1` = 有）。
+/// - `packed`：打包载荷存储。
+fn coalesced_take(pending: &AtomicU8, packed: &AtomicU64) -> Option<u64> {
+    if pending.swap(0, Ordering::Acquire) == 0 {
+        return None;
+    }
+    Some(packed.load(Ordering::Relaxed))
+}
+
 #[repr(C, align(64))]
 /// ### English
 /// Coalesced mouse-move state: keeps only the latest `(x, y)` until the Servo thread drains it.
@@ -22,10 +68,10 @@ pub struct CoalescedMouseMove {
     /// pending 标记（`0` = 无待处理移动，`1` = 有待处理移动）。
     pending: AtomicU8,
     /// ### English
-    /// Padding to keep `packed_pos` on a separate cache line from unrelated atomics.
+    /// Padding bytes to keep `packed_pos` 8-byte aligned in `#[repr(C)]` layout.
     ///
     /// ### 中文
-    /// 填充：让 `packed_pos` 与其它原子尽量避免同一缓存行（降低伪共享）。
+    /// 填充：用于在 `#[repr(C)]` 布局下保持 `packed_pos` 的 8 字节对齐。
     _padding: [u8; 7],
     /// ### English
     /// Packed `(x, y)` mouse position as two `f32` bit patterns.
@@ -67,8 +113,7 @@ impl CoalescedMouseMove {
     /// - `x`：设备像素坐标 X（f32）。
     /// - `y`：设备像素坐标 Y（f32）。
     pub fn set(&self, x: f32, y: f32) -> bool {
-        self.packed_pos.store(pack_f32x2(x, y), Ordering::Relaxed);
-        self.pending.swap(1, Ordering::Release) == 0
+        coalesced_set(&self.pending, &self.packed_pos, pack_f32x2(x, y))
     }
 
     /// ### English
@@ -77,11 +122,7 @@ impl CoalescedMouseMove {
     /// ### 中文
     /// 若处于 pending，则取出最新鼠标位置。
     pub fn take(&self) -> Option<(f32, f32)> {
-        if self.pending.swap(0, Ordering::Acquire) == 0 {
-            return None;
-        }
-        let packed = self.packed_pos.load(Ordering::Relaxed);
-        Some(unpack_f32x2(packed))
+        coalesced_take(&self.pending, &self.packed_pos).map(unpack_f32x2)
     }
 }
 
@@ -135,10 +176,10 @@ pub struct CoalescedResize {
     /// pending 标记（`0` = 无待处理 resize，`1` = 有待处理 resize）。
     pending: AtomicU8,
     /// ### English
-    /// Padding to keep `packed_size` on a separate cache line from unrelated atomics.
+    /// Padding bytes to keep `packed_size` 8-byte aligned in `#[repr(C)]` layout.
     ///
     /// ### 中文
-    /// 填充：让 `packed_size` 与无关原子尽量不共用 cache line（降低伪共享）。
+    /// 填充：用于在 `#[repr(C)]` 布局下保持 `packed_size` 的 8 字节对齐。
     _padding: [u8; 7],
     /// ### English
     /// Packed `(width, height)` as two `u32` values.
@@ -180,9 +221,7 @@ impl CoalescedResize {
     /// - `width`：宽度（像素）。
     /// - `height`：高度（像素）。
     pub fn set(&self, width: u32, height: u32) -> bool {
-        self.packed_size
-            .store(pack_u32x2(width, height), Ordering::Relaxed);
-        self.pending.swap(1, Ordering::Release) == 0
+        coalesced_set(&self.pending, &self.packed_size, pack_u32x2(width, height))
     }
 
     /// ### English
@@ -191,12 +230,10 @@ impl CoalescedResize {
     /// ### 中文
     /// 若处于 pending，则取出最新尺寸。
     pub fn take(&self) -> Option<PhysicalSize<u32>> {
-        if self.pending.swap(0, Ordering::Acquire) == 0 {
-            return None;
-        }
-        let packed = self.packed_size.load(Ordering::Relaxed);
-        let (width, height) = unpack_u32x2(packed);
-        Some(PhysicalSize::new(width, height))
+        coalesced_take(&self.pending, &self.packed_size).map(|packed| {
+            let (width, height) = unpack_u32x2(packed);
+            PhysicalSize::new(width, height)
+        })
     }
 }
 

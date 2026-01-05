@@ -19,6 +19,16 @@ use super::{XianWebEngineFrame, XianWebEngineView};
 ///
 /// Returns the number of acquired frames written.
 ///
+/// #### Parameters
+/// - `views`: Pointer to an array of `count` view pointers.
+/// - `out_view_indices`: Output array receiving input indices for each acquired frame.
+/// - `out_frames`: Output array receiving acquired frames (dense, 0..return_value).
+/// - `count`: Number of entries in the `views` array (and capacity required for the outputs).
+///
+/// #### Safety
+/// - If `count != 0`, `views` must be valid for reads of `count` pointers.
+/// - `out_view_indices` and `out_frames` must be valid for writes of at least `count` elements.
+///
 /// ### 中文
 /// 批量尝试获取多个 view 的最新 READY 帧。
 ///
@@ -30,6 +40,16 @@ use super::{XianWebEngineFrame, XianWebEngineView};
 /// - 两个输出数组都必须至少能容纳 `count` 个元素。
 ///
 /// 返回写入的 acquired frame 数量。
+///
+/// #### 参数
+/// - `views`：指向长度为 `count` 的 view 指针数组。
+/// - `out_view_indices`：输出数组，写入每个 acquired frame 对应的输入下标。
+/// - `out_frames`：输出数组，写入 acquired frames（0..返回值紧凑排列）。
+/// - `count`：`views` 数组长度（也是输出数组需要满足的最小容量）。
+///
+/// #### 安全
+/// - 若 `count != 0`，则 `views` 必须至少可读 `count` 个指针。
+/// - `out_view_indices` 与 `out_frames` 必须至少可写 `count` 个元素。
 pub unsafe extern "C" fn xian_web_engine_views_acquire_frames(
     views: *const *mut XianWebEngineView,
     out_view_indices: *mut u32,
@@ -77,6 +97,16 @@ pub unsafe extern "C" fn xian_web_engine_views_acquire_frames(
 /// If a view was created with `XIAN_WEB_ENGINE_VIEW_FLAG_UNSAFE_NO_CONSUMER_FENCE`, its corresponding
 /// consumer fence MUST be 0 (ignored).
 ///
+/// #### Parameters
+/// - `views`: Pointer to an array of `count` view pointers.
+/// - `slots`: Pointer to an array of `count` slot indices to release (one per view).
+/// - `consumer_fences`: Optional pointer to an array of `count` `GLsync` values (cast to `u64`).
+/// - `count`: Number of entries in the arrays.
+///
+/// #### Safety
+/// - If `count != 0`, `views` and `slots` must be valid for reads of `count` elements.
+/// - If `consumer_fences` is non-NULL, it must be valid for reads of `count` elements.
+///
 /// ### 中文
 /// 批量释放多个 view 之前 acquire 的帧槽位。
 ///
@@ -89,6 +119,16 @@ pub unsafe extern "C" fn xian_web_engine_views_acquire_frames(
 ///
 /// 若某个 view 创建时指定了 `XIAN_WEB_ENGINE_VIEW_FLAG_UNSAFE_NO_CONSUMER_FENCE`，则该 view
 /// 对应的 consumer fence 必须为 0（会被忽略）。
+///
+/// #### 参数
+/// - `views`：指向长度为 `count` 的 view 指针数组。
+/// - `slots`：指向长度为 `count` 的 slot 索引数组（每个 view 一个）。
+/// - `consumer_fences`：可选数组指针，长度为 `count`，元素为 `GLsync`（转为 `u64`）。
+/// - `count`：数组长度。
+///
+/// #### 安全
+/// - 若 `count != 0`，则 `views` 与 `slots` 必须至少可读 `count` 个元素。
+/// - 若 `consumer_fences` 非 NULL，则它必须至少可读 `count` 个元素。
 pub unsafe extern "C" fn xian_web_engine_views_release_frames(
     views: *const *mut XianWebEngineView,
     slots: *const u32,

@@ -1,12 +1,24 @@
 //! ### English
-//! Bitflags controlling optional view behaviors.
+//! Bitflags controlling optional engine/view behaviors.
 //!
 //! These are passed through the C ABI as a `u32` bitmask.
 //!
 //! ### 中文
-//! 控制 view 可选行为的位标志（bitflags）。
+//! 控制引擎/view 可选行为的位标志（bitflags）。
 //!
 //! 通过 C ABI 以 `u32` 位掩码传入。
+/// ### English
+/// Engine mode: do not park/unpark the dedicated Servo thread when idle (busy-spin loop).
+///
+/// This reduces wake syscall overhead and can improve latency, but will increase CPU usage
+/// significantly when the thread is otherwise idle.
+///
+/// ### 中文
+/// 引擎模式：独立 Servo 线程在 idle 时不再 park/unpark（busy-spin）。
+///
+/// 该模式可减少唤醒 syscalls 的开销、降低延迟，但会显著增加空闲时的 CPU 占用。
+pub const XIAN_WEB_ENGINE_ENGINE_FLAG_NO_PARK: u32 = 1 << 0;
+
 /// ### English
 /// Unsafe mode: skip Java-side consumer fences (fastest but may overwrite textures still in use).
 ///

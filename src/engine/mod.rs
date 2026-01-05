@@ -17,7 +17,7 @@ mod runtime;
 mod vsync;
 
 pub(crate) use frame::AcquiredFrame;
-pub(crate) use glfw::{EmbedderGlfwApi, install_embedder_glfw_api};
+pub(crate) use glfw::EmbedderGlfwApi;
 pub(crate) use input_types::{
     XIAN_WEB_ENGINE_INPUT_KIND_KEY, XIAN_WEB_ENGINE_INPUT_KIND_MOUSE_BUTTON,
     XIAN_WEB_ENGINE_INPUT_KIND_MOUSE_MOVE, XIAN_WEB_ENGINE_INPUT_KIND_WHEEL,

@@ -11,6 +11,8 @@ use std::sync::{
 };
 use std::thread;
 
+use crate::engine::EmbedderGlfwApi;
+use crate::engine::flags;
 use crate::engine::lockfree::OneShot;
 use crate::engine::refresh::RefreshScheduler;
 use crate::engine::rendering::GlfwSharedContext;
@@ -39,7 +41,7 @@ mod view;
 ///    - Drain control commands
 ///    - Process per-view pending work
 ///    - Spin Servo's internal event loop
-///    - Park until woken
+///    - Park until woken (or busy-spin in `NO_PARK` mode)
 ///
 /// Threading notes:
 /// - Servo's internal worker thread pools can be tuned via the embedder's ABI configuration.
@@ -48,12 +50,14 @@ mod view;
 ///
 /// #### Parameters
 /// - `glfw_shared_window_handle`: Embedder GLFW window handle whose context will be shared.
+/// - `glfw_api`: Embedder-provided GLFW function pointer table.
 /// - `resources_dir`: Optional resource directory override.
 /// - `config_dir`: Optional Servo config directory override.
 /// - `vsync_queue`: Vsync callback queue used by Servo refresh.
 /// - `pending_queue`: Pending view-id queue used to schedule per-view work.
 /// - `command_queue`: Control-command queue from embedder threads.
 /// - `thread_pool_cap`: Servo worker thread cap (`0` means no cap).
+/// - `engine_flags`: Engine flags bitmask (see `XIAN_WEB_ENGINE_ENGINE_FLAG_*`).
 /// - `init`: One-shot used to report initialization success/failure to the spawner.
 ///
 /// ### 中文
@@ -70,7 +74,7 @@ mod view;
 ///    - drain 控制命令
 ///    - 处理每 view 的 pending work
 ///    - 驱动 Servo 内部事件循环
-///    - park 等待唤醒
+///    - park 等待唤醒（或在 `NO_PARK` 模式下 busy-spin）
 ///
 /// 线程说明：
 /// - Servo 内部工作线程池可通过宿主侧 ABI 配置调优：
@@ -78,22 +82,26 @@ mod view;
 ///
 /// #### 参数
 /// - `glfw_shared_window_handle`：宿主 GLFW window 的句柄；其上下文会与 Servo 线程共享。
+/// - `glfw_api`：宿主提供的 GLFW 函数指针表。
 /// - `resources_dir`：可选的资源目录覆盖。
 /// - `config_dir`：可选的 Servo 配置目录覆盖。
 /// - `vsync_queue`：Servo refresh 使用的 vsync 回调队列。
 /// - `pending_queue`：用于调度每 view 工作的 pending view-id 队列。
 /// - `command_queue`：来自宿主线程的控制命令队列。
 /// - `thread_pool_cap`：Servo 工作线程上限（`0` 表示不封顶）。
+/// - `engine_flags`：引擎标志位掩码（见 `XIAN_WEB_ENGINE_ENGINE_FLAG_*`）。
 /// - `init`：用于向创建方回报初始化成功/失败的一次性通道。
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_servo_thread(
     glfw_shared_window_handle: usize,
+    glfw_api: EmbedderGlfwApi,
     resources_dir: Option<PathBuf>,
     config_dir: Option<PathBuf>,
     vsync_queue: Arc<VsyncCallbackQueue>,
     pending_queue: Arc<PendingIdQueue>,
     command_queue: Arc<CommandQueue>,
     thread_pool_cap: u32,
+    engine_flags: u32,
     init: Arc<OneShot<Result<(), String>>>,
 ) {
     /// ### English
@@ -116,6 +124,7 @@ pub(super) fn run_servo_thread(
         let _ = std::fs::create_dir_all(config_dir);
     }
 
+    let no_park = (engine_flags & flags::XIAN_WEB_ENGINE_ENGINE_FLAG_NO_PARK) != 0;
     let wake_pending = Arc::new(AtomicBool::new(false));
 
     #[derive(Clone)]
@@ -137,6 +146,12 @@ pub(super) fn run_servo_thread(
         /// ### 中文
         /// 合并 “wake pending” 标记，用于避免 unpark 风暴。
         pending: Arc<AtomicBool>,
+        /// ### English
+        /// Whether the Servo thread is running in no-park mode (busy-spin).
+        ///
+        /// ### 中文
+        /// Servo 线程是否运行在 no-park 模式（busy-spin）。
+        no_park: bool,
     }
 
     impl servo::EventLoopWaker for ThreadWaker {
@@ -155,6 +170,9 @@ pub(super) fn run_servo_thread(
         /// ### 中文
         /// 请求唤醒；将多次唤醒合并为一次 `unpark`。
         fn wake(&self) {
+            if self.no_park {
+                return;
+            }
             if !self.pending.swap(true, Ordering::Relaxed) {
                 self.thread.unpark();
             }
@@ -164,6 +182,7 @@ pub(super) fn run_servo_thread(
     let waker: Box<dyn servo::EventLoopWaker> = Box::new(ThreadWaker {
         thread: thread::current(),
         pending: wake_pending.clone(),
+        no_park,
     });
 
     let opts = servo::Opts {
@@ -214,7 +233,7 @@ pub(super) fn run_servo_thread(
         .build();
 
     let glfw_shared_window_ptr = glfw_shared_window_handle as *mut c_void;
-    let shared_ctx = match GlfwSharedContext::new(glfw_shared_window_ptr) {
+    let shared_ctx = match GlfwSharedContext::new(glfw_shared_window_ptr, glfw_api) {
         Ok(ctx) => ctx,
         Err(err) => {
             let _ = init.send(Err(err));
@@ -259,6 +278,11 @@ pub(super) fn run_servo_thread(
         }
 
         servo.spin_event_loop();
+
+        if no_park {
+            std::hint::spin_loop();
+            continue;
+        }
 
         if wake_pending.swap(false, Ordering::Relaxed) {
             continue;

@@ -15,6 +15,7 @@
 ///
 /// #### 参数
 /// - `glfw_key`：GLFW 键码。
+#[inline]
 pub(super) fn glfw_key_to_named_key(glfw_key: u32) -> Option<servo::NamedKey> {
     use servo::NamedKey;
     match glfw_key {

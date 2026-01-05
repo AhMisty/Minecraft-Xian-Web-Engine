@@ -1,15 +1,14 @@
 //! ### English
-//! Windows implementation of the minimal GLFW symbol loader.
+//! Embedder-based implementation of the minimal GLFW symbol loader.
 //!
 //! Uses an embedder-provided function table (`EmbedderGlfwApi`) instead of dynamic library lookup.
 //!
 //! ### 中文
-//! 最小 GLFW 符号 loader 的 Windows 实现。
+//! 最小 GLFW 符号 loader 的宿主函数表实现。
 //!
 //! 使用宿主提供的函数表（`EmbedderGlfwApi`），不做动态库按名查找。
 
 use std::ffi::{CStr, c_char, c_int, c_void};
-use std::sync::OnceLock;
 
 #[repr(C)]
 /// ### English
@@ -96,76 +95,6 @@ type GlfwCreateWindow = unsafe extern "C" fn(
 /// `glfwDestroyWindow` 的函数指针类型。
 type GlfwDestroyWindow = unsafe extern "C" fn(*mut GLFWwindow);
 
-static EMBEDDER_GLFW_API: OnceLock<GlfwApi> = OnceLock::new();
-
-/// ### English
-/// Installs the embedder-provided GLFW function table for this process.
-///
-/// This is a one-time installation backed by `OnceLock`; repeated calls return an error.
-///
-/// #### Parameters
-/// - `api`: Embedder function pointer table for required GLFW symbols.
-///
-/// ### 中文
-/// 为当前进程安装宿主提供的 GLFW 函数表。
-///
-/// 该安装由 `OnceLock` 保证只执行一次；重复调用会返回错误。
-///
-/// #### 参数
-/// - `api`：宿主提供的 GLFW 必需符号函数指针表。
-pub(super) fn install_embedder_glfw_api(api: super::EmbedderGlfwApi) -> Result<(), String> {
-    if api.glfw_get_proc_address == 0 {
-        return Err("EmbedderGlfwApi.glfw_get_proc_address is NULL".to_string());
-    }
-    if api.glfw_make_context_current == 0 {
-        return Err("EmbedderGlfwApi.glfw_make_context_current is NULL".to_string());
-    }
-    if api.glfw_default_window_hints == 0 {
-        return Err("EmbedderGlfwApi.glfw_default_window_hints is NULL".to_string());
-    }
-    if api.glfw_window_hint == 0 {
-        return Err("EmbedderGlfwApi.glfw_window_hint is NULL".to_string());
-    }
-    if api.glfw_get_window_attrib == 0 {
-        return Err("EmbedderGlfwApi.glfw_get_window_attrib is NULL".to_string());
-    }
-    if api.glfw_create_window == 0 {
-        return Err("EmbedderGlfwApi.glfw_create_window is NULL".to_string());
-    }
-    if api.glfw_destroy_window == 0 {
-        return Err("EmbedderGlfwApi.glfw_destroy_window is NULL".to_string());
-    }
-
-    let table = GlfwApi {
-        glfw_get_proc_address: unsafe {
-            std::mem::transmute::<usize, GlfwGetProcAddress>(api.glfw_get_proc_address)
-        },
-        glfw_make_context_current: unsafe {
-            std::mem::transmute::<usize, GlfwMakeContextCurrent>(api.glfw_make_context_current)
-        },
-        glfw_default_window_hints: unsafe {
-            std::mem::transmute::<usize, GlfwDefaultWindowHints>(api.glfw_default_window_hints)
-        },
-        glfw_window_hint: unsafe {
-            std::mem::transmute::<usize, GlfwWindowHint>(api.glfw_window_hint)
-        },
-        glfw_get_window_attrib: unsafe {
-            std::mem::transmute::<usize, GlfwGetWindowAttrib>(api.glfw_get_window_attrib)
-        },
-        glfw_create_window: unsafe {
-            std::mem::transmute::<usize, GlfwCreateWindow>(api.glfw_create_window)
-        },
-        glfw_destroy_window: unsafe {
-            std::mem::transmute::<usize, GlfwDestroyWindow>(api.glfw_destroy_window)
-        },
-    };
-
-    EMBEDDER_GLFW_API
-        .set(table)
-        .map_err(|_| "Embedder GLFW API is already installed".to_string())?;
-    Ok(())
-}
-
 #[derive(Clone, Copy)]
 /// ### English
 /// Loaded minimal GLFW API used by the engine (context control + proc loading).
@@ -219,28 +148,78 @@ pub struct GlfwApi {
 
 impl GlfwApi {
     /// ### English
-    /// Loads the minimal subset of GLFW symbols required by this crate.
-    ///
-    /// An embedder-provided function table must be installed via
-    /// `xian_web_engine_set_glfw_api` before calling this.
+    /// Creates a loaded GLFW API table from embedder-provided function pointers.
     ///
     /// ### 中文
-    /// 加载本 crate 所需的最小 GLFW 符号集合。
-    ///
-    /// 调用前必须由宿主通过 `xian_web_engine_set_glfw_api` 安装函数表。
+    /// 由宿主提供的 GLFW 函数指针表构建已加载的 GLFW API 表。
     #[inline]
-    pub fn load() -> Result<Self, String> {
-        EMBEDDER_GLFW_API.get().copied().ok_or_else(|| {
-            "Embedder GLFW API is not installed; call xian_web_engine_set_glfw_api before xian_web_engine_create"
-                .to_string()
+    pub fn from_embedder(api: super::EmbedderGlfwApi) -> Result<Self, String> {
+        macro_rules! require_nonzero {
+            ($field:ident) => {
+                if api.$field == 0 {
+                    return Err(
+                        concat!("EmbedderGlfwApi.", stringify!($field), " is NULL").to_string()
+                    );
+                }
+            };
+        }
+
+        require_nonzero!(glfw_get_proc_address);
+        require_nonzero!(glfw_make_context_current);
+        require_nonzero!(glfw_default_window_hints);
+        require_nonzero!(glfw_window_hint);
+        require_nonzero!(glfw_get_window_attrib);
+        require_nonzero!(glfw_create_window);
+        require_nonzero!(glfw_destroy_window);
+
+        Ok(Self {
+            glfw_get_proc_address: unsafe {
+                std::mem::transmute::<usize, GlfwGetProcAddress>(api.glfw_get_proc_address)
+            },
+            glfw_make_context_current: unsafe {
+                std::mem::transmute::<usize, GlfwMakeContextCurrent>(api.glfw_make_context_current)
+            },
+            glfw_default_window_hints: unsafe {
+                std::mem::transmute::<usize, GlfwDefaultWindowHints>(api.glfw_default_window_hints)
+            },
+            glfw_window_hint: unsafe {
+                std::mem::transmute::<usize, GlfwWindowHint>(api.glfw_window_hint)
+            },
+            glfw_get_window_attrib: unsafe {
+                std::mem::transmute::<usize, GlfwGetWindowAttrib>(api.glfw_get_window_attrib)
+            },
+            glfw_create_window: unsafe {
+                std::mem::transmute::<usize, GlfwCreateWindow>(api.glfw_create_window)
+            },
+            glfw_destroy_window: unsafe {
+                std::mem::transmute::<usize, GlfwDestroyWindow>(api.glfw_destroy_window)
+            },
         })
     }
 
     /// ### English
     /// Makes `window` current on the calling thread.
     ///
+    /// Passing NULL clears the current context.
+    ///
+    /// #### Parameters
+    /// - `window`: Window pointer to make current (may be NULL).
+    ///
+    /// #### Safety
+    /// - `window` must be a valid `GLFWwindow*` when non-NULL.
+    /// - The call must occur on a thread where it is legal to manipulate the GLFW context.
+    ///
     /// ### 中文
     /// 将 `window` 设为调用线程的 current 上下文。
+    ///
+    /// 传入 NULL 表示清空当前上下文。
+    ///
+    /// #### 参数
+    /// - `window`：要设为 current 的 window 指针（允许为 NULL）。
+    ///
+    /// #### 安全
+    /// - 若 `window` 非 NULL，则它必须是有效的 `GLFWwindow*`。
+    /// - 调用必须发生在允许操作 GLFW 上下文的线程上。
     #[inline]
     pub unsafe fn make_current(&self, window: *mut GLFWwindow) {
         unsafe { (self.glfw_make_context_current)(window) };
@@ -252,11 +231,18 @@ impl GlfwApi {
     /// #### Parameters
     /// - `name`: NUL-terminated proc name.
     ///
+    /// #### Safety
+    /// The returned pointer is a raw function pointer from the driver; the caller must cast it to
+    /// the correct signature before calling.
+    ///
     /// ### 中文
     /// 通过 GLFW 加载 OpenGL 函数指针。
     ///
     /// #### 参数
     /// - `name`：以 NUL 结尾的函数名。
+    ///
+    /// #### 安全
+    /// 返回值为驱动提供的原始函数指针；调用方必须将其转换为正确的函数签名后再调用。
     #[inline]
     pub unsafe fn get_proc_address(&self, name: &CStr) -> *const c_void {
         unsafe { (self.glfw_get_proc_address)(name.as_ptr()) }
@@ -268,11 +254,18 @@ impl GlfwApi {
     /// #### Parameters
     /// - `window`: Window pointer to destroy.
     ///
+    /// #### Safety
+    /// `window` must be a valid `GLFWwindow*` created by this loader, and must not be used after
+    /// destruction.
+    ///
     /// ### 中文
     /// 销毁由本 loader 创建的 GLFW window。
     ///
     /// #### 参数
     /// - `window`：需要销毁的 window 指针。
+    ///
+    /// #### 安全
+    /// `window` 必须是由本 loader 创建的有效 `GLFWwindow*`，且销毁后不得再使用。
     #[inline]
     pub unsafe fn destroy_window(&self, window: *mut GLFWwindow) {
         unsafe { (self.glfw_destroy_window)(window) };
@@ -284,10 +277,25 @@ impl GlfwApi {
     /// This is used so the Servo thread can render into textures that the Java context can
     /// sample (shared objects within the same share group).
     ///
+    /// #### Parameters
+    /// - `share`: Existing window whose context share-group will be used (must not be NULL).
+    ///
+    /// #### Safety
+    /// - `share` must be a valid `GLFWwindow*`.
+    /// - The caller must ensure the shared window's context is valid for attribute queries and
+    ///   sharing.
+    ///
     /// ### 中文
     /// 创建一个不可见的 1x1 离屏 window，使其 GL 上下文与 `share` 共享对象。
     ///
     /// 用于让 Servo 线程渲染到纹理，并由 Java 上下文采样（同一 share group 共享对象）。
+    ///
+    /// #### 参数
+    /// - `share`：用于共享的已有 window（必须非 NULL）。
+    ///
+    /// #### 安全
+    /// - `share` 必须是有效的 `GLFWwindow*`。
+    /// - 调用方必须确保共享 window 的上下文可用于属性查询与共享。
     pub unsafe fn create_shared_offscreen_window(
         &self,
         share: *mut GLFWwindow,

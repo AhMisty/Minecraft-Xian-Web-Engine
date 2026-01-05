@@ -62,7 +62,7 @@ impl InputEventQueue {
         for (offset, &event) in events.iter().take(accepted).enumerate() {
             let slot = &self.slots[head.wrapping_add(offset) & INPUT_QUEUE_MASK];
             unsafe {
-                (*slot.value.get()).write(event);
+                slot.write_value(event);
             }
         }
         self.head
@@ -90,7 +90,7 @@ impl InputEventQueue {
         }
 
         let slot = &self.slots[tail & INPUT_QUEUE_MASK];
-        let event = unsafe { (*slot.value.get()).assume_init_read() };
+        let event = unsafe { slot.read_value() };
         self.tail.store(tail.wrapping_add(1), Ordering::Release);
         Some(event)
     }

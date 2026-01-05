@@ -1,0 +1,80 @@
+name: Build and Release Nightly
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 16 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  prepare-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        if: github.event_name == 'schedule'
+        uses: actions/checkout@v6
+
+      - name: Reset Nightly Release
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TZ: "Asia/Shanghai"
+        run: |
+          DATE=$(date +'%Y%m%d')
+          COMMIT_SHORT=$(echo ${{ github.sha }} | cut -c 1-7)
+
+          gh release delete nightly --cleanup-tag --yes || true
+
+          gh release create nightly \
+            --title "Nightly Build ($DATE)" \
+            --notes "Auto-built from commit $COMMIT_SHORT." \
+            --prerelease \
+            --target ${{ github.sha }}
+
+  build-and-upload:
+    name: ${{ github.event_name == 'schedule' && 'Build Release' || 'Check' }} on ${{ matrix.os }}
+    needs: prepare-release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target_os: linux
+            ext: so
+          - os: windows-latest
+            target_os: windows
+            ext: dll
+          - os: macos-latest
+            target_os: macos
+            ext: dylib
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Run Cargo Check
+        if: github.event_name != 'schedule'
+        run: cargo check --verbose
+
+      - name: Build Release
+        if: github.event_name == 'schedule'
+        run: cargo build --release --verbose
+
+      - name: Rename and Upload to Release
+        if: github.event_name == 'schedule'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DATE=$(date +'%Y%m%d')
+          SRC_FILE=$(ls target/release/*.${{ matrix.ext }} | head -n 1)
+          NEW_NAME="xian-web-engine-${{ matrix.target_os }}-nightly-${DATE}.${{ matrix.ext }}"
+
+          gh release upload nightly "$SRC_FILE#$NEW_NAME" --clobber

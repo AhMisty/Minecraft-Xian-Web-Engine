@@ -9,11 +9,11 @@
 //! 支持快速的单生产者路径（SPSC）与多生产者路径（MPSC）。
 
 use std::cell::UnsafeCell;
-use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 use crate::engine::cache::pad_after2;
 use crate::engine::input_types::XianWebEngineInputEvent;
+use crate::engine::lockfree::BoundedRingSlot;
 
 /// ### English
 /// Lock-free bounded queue for input events.
@@ -23,30 +23,7 @@ use crate::engine::input_types::XianWebEngineInputEvent;
 const INPUT_QUEUE_CAPACITY: usize = 256;
 const INPUT_QUEUE_MASK: usize = INPUT_QUEUE_CAPACITY - 1;
 const PAD_INDEX_BYTES: usize = pad_after2::<AtomicUsize, UnsafeCell<usize>>();
-
-#[repr(C)]
-/// ### English
-/// One ring-buffer slot for the bounded input queue (sequence + payload).
-///
-/// ### 中文
-/// 有界输入队列的单个 ring 槽位（序号 + 载荷）。
-struct InputQueueSlot {
-    /// ### English
-    /// Sequence number used by the lock-free bounded queue algorithm.
-    ///
-    /// ### 中文
-    /// 无锁有界队列算法使用的序号。
-    seq: AtomicUsize,
-    /// ### English
-    /// Stored event payload (written by producer, read by the single consumer).
-    ///
-    /// ### 中文
-    /// 事件载荷（由生产者写入，单消费者读取）。
-    value: UnsafeCell<MaybeUninit<XianWebEngineInputEvent>>,
-}
-
-unsafe impl Send for InputQueueSlot {}
-unsafe impl Sync for InputQueueSlot {}
+const PAD_PENDING_BYTES: usize = pad_after2::<bool, AtomicU8>();
 
 #[repr(C, align(64))]
 /// ### English
@@ -110,17 +87,17 @@ pub struct InputEventQueue {
     /// 合并后的 “输入待处理” 标记（`0`/`1`），用于减少 wake/notify 开销。
     pending: AtomicU8,
     /// ### English
-    /// Padding for cache-line alignment.
+    /// Padding to keep control flags on a separate cache line from the ring-buffer slots.
     ///
     /// ### 中文
-    /// cache line 对齐填充。
-    _padding: [u8; 7],
+    /// 填充：让控制标记与 ring buffer 槽位尽量不共用 cache line（降低伪共享）。
+    _pad_pending: [u8; PAD_PENDING_BYTES],
     /// ### English
     /// Fixed-capacity ring buffer storage.
     ///
     /// ### 中文
     /// 固定容量 ring buffer 存储区。
-    slots: [InputQueueSlot; INPUT_QUEUE_CAPACITY],
+    slots: [BoundedRingSlot<XianWebEngineInputEvent>; INPUT_QUEUE_CAPACITY],
 }
 
 unsafe impl Send for InputEventQueue {}
@@ -149,11 +126,8 @@ impl InputEventQueue {
             _pad_tail: [0; PAD_INDEX_BYTES],
             single_producer,
             pending: AtomicU8::new(0),
-            _padding: [0; 7],
-            slots: std::array::from_fn(|i| InputQueueSlot {
-                seq: AtomicUsize::new(i),
-                value: UnsafeCell::new(MaybeUninit::uninit()),
-            }),
+            _pad_pending: [0; PAD_PENDING_BYTES],
+            slots: std::array::from_fn(BoundedRingSlot::new),
         }
     }
 

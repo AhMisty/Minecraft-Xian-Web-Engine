@@ -24,6 +24,7 @@ impl SharedFrameState {
     ///
     /// #### 参数
     /// - `slot`：要读取的槽位索引。
+    #[inline]
     pub fn get_producer_fence(&self, slot: usize) -> u64 {
         self.slots[slot].producer_fence.load(Ordering::Relaxed)
     }
@@ -39,6 +40,7 @@ impl SharedFrameState {
     ///
     /// #### 参数
     /// - `slot`：要清空的槽位索引。
+    #[inline]
     pub fn clear_producer_fence(&self, slot: usize) {
         self.slots[slot].producer_fence.store(0, Ordering::Relaxed);
     }
@@ -54,6 +56,7 @@ impl SharedFrameState {
     ///
     /// #### 参数
     /// - `slot`：要读取的槽位索引。
+    #[inline]
     pub fn get_consumer_fence(&self, slot: usize) -> u64 {
         self.slots[slot].consumer_fence.load(Ordering::Relaxed)
     }
@@ -69,6 +72,7 @@ impl SharedFrameState {
     ///
     /// #### 参数
     /// - `slot`：要清空的槽位索引。
+    #[inline]
     pub fn clear_consumer_fence(&self, slot: usize) {
         self.slots[slot].consumer_fence.store(0, Ordering::Relaxed);
     }

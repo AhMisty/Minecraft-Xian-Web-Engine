@@ -25,10 +25,10 @@ pub(super) struct PendingWork {
     /// 待处理位图，包含用于合并唤醒的内部 busy 位。
     mask: AtomicU8,
     /// ### English
-    /// Padding for cache-line alignment.
+    /// Padding bytes for explicit `#[repr(C)]` layout (no semantic meaning).
     ///
     /// ### 中文
-    /// cache line 对齐填充。
+    /// `#[repr(C)]` 显式布局的填充字节（无语义）。
     _padding: [u8; 7],
 }
 

@@ -152,11 +152,18 @@ impl GlfwSharedContext {
     /// Creates an offscreen GLFW window that shares objects with `glfw_shared_window`.
     /// Must be called from the thread that will own the GL context (Servo thread).
     ///
+    /// `glfw_api` is the embedder-provided GLFW function pointer table.
+    ///
     /// ### 中文
     /// 创建一个与 `glfw_shared_window` 共享 GL 对象的离屏 GLFW window。
     /// 必须在将要持有 GL 上下文的线程（Servo 线程）中调用。
-    pub fn new(glfw_shared_window: *mut c_void) -> Result<Rc<Self>, String> {
-        let glfw = glfw::LoadedGlfwApi::load()?;
+    ///
+    /// `glfw_api` 为宿主提供的 GLFW 函数指针表。
+    pub fn new(
+        glfw_shared_window: *mut c_void,
+        glfw_api: glfw::EmbedderGlfwApi,
+    ) -> Result<Rc<Self>, String> {
+        let glfw = glfw::LoadedGlfwApi::from_embedder(glfw_api)?;
         let glfw_shared_window = glfw_shared_window as glfw::GlfwWindowPtr;
 
         let glfw_window = unsafe { glfw.create_shared_offscreen_window(glfw_shared_window)? };
@@ -207,6 +214,8 @@ impl GlfwSharedContext {
         /// ### English
         /// Loads a GL proc by allocating a temporary NUL-terminated buffer on the heap.
         ///
+        /// Returns NULL if the proc name contains NUL.
+        ///
         /// #### Parameters
         /// - `glfw`: Loaded GLFW API table.
         /// - `bytes`: Proc name bytes (must not contain NUL).
@@ -214,17 +223,20 @@ impl GlfwSharedContext {
         /// ### 中文
         /// 通过在堆上临时分配 NUL 结尾缓冲区来加载 GL 函数指针。
         ///
+        /// 若名称包含 NUL，则返回 NULL。
+        ///
         /// #### 参数
         /// - `glfw`：已加载的 GLFW API 表。
         /// - `bytes`：函数名字节（不得包含 NUL）。
         fn load_gl_proc_heap(glfw: &glfw::LoadedGlfwApi, bytes: &[u8]) -> *const c_void {
-            if bytes.contains(&0) {
-                panic!("gl proc name contains NUL");
-            }
             let mut buf = Vec::with_capacity(bytes.len() + 1);
             buf.extend_from_slice(bytes);
             buf.push(0);
-            let cstr = unsafe { CStr::from_bytes_with_nul_unchecked(&buf) };
+
+            let Ok(cstr) = CStr::from_bytes_with_nul(&buf) else {
+                debug_assert!(!bytes.contains(&0), "gl proc name contains NUL");
+                return std::ptr::null();
+            };
             unsafe { glfw.get_proc_address(cstr) }
         }
 
@@ -232,12 +244,16 @@ impl GlfwSharedContext {
         /// ### English
         /// Loads a GL proc using a stack buffer when possible (falls back to heap for long names).
         ///
+        /// Returns NULL if the proc name contains NUL.
+        ///
         /// #### Parameters
         /// - `glfw`: Loaded GLFW API table.
         /// - `name`: Proc name (ASCII, must not contain NUL).
         ///
         /// ### 中文
         /// 尽可能使用栈缓冲区加载 GL 函数指针（名称过长时回退到堆分配）。
+        ///
+        /// 若名称包含 NUL，则返回 NULL。
         ///
         /// #### 参数
         /// - `glfw`：已加载的 GLFW API 表。
@@ -247,13 +263,14 @@ impl GlfwSharedContext {
 
             let bytes = name.as_bytes();
             if bytes.len() < STACK_BUF_SIZE {
-                if bytes.contains(&0) {
-                    panic!("gl proc name contains NUL");
-                }
                 let mut buf = [0u8; STACK_BUF_SIZE];
                 buf[..bytes.len()].copy_from_slice(bytes);
                 buf[bytes.len()] = 0;
-                let cstr = unsafe { CStr::from_bytes_with_nul_unchecked(&buf[..bytes.len() + 1]) };
+
+                let Ok(cstr) = CStr::from_bytes_with_nul(&buf[..bytes.len() + 1]) else {
+                    debug_assert!(!bytes.contains(&0), "gl proc name contains NUL");
+                    return std::ptr::null();
+                };
                 unsafe { glfw.get_proc_address(cstr) }
             } else {
                 load_gl_proc_heap(glfw, bytes)

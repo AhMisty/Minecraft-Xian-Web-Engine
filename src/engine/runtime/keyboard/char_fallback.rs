@@ -19,6 +19,7 @@
 /// #### 参数
 /// - `glfw_key`：GLFW 键码。
 /// - `modifiers`：修饰键集合（SHIFT 会影响符号/字母）。
+#[inline]
 pub(super) fn glfw_key_to_char(glfw_key: u32, modifiers: servo::Modifiers) -> Option<char> {
     let shift = modifiers.contains(servo::Modifiers::SHIFT);
 

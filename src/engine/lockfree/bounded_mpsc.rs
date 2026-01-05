@@ -4,37 +4,13 @@
 //! ### 中文
 //! 有界无锁 MPSC 队列（多生产者、单消费者）。
 
-use std::cell::UnsafeCell;
-use std::mem::MaybeUninit;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 
 use crate::engine::cache::pad_after;
 
+use super::{BoundedRingSlot, bounded_mpsc_pop, bounded_mpsc_try_push};
+
 const PAD_ATOMIC_USIZE: usize = pad_after::<AtomicUsize>();
-
-#[repr(C)]
-/// ### English
-/// One ring slot used by the bounded MPSC algorithm (sequence + payload).
-///
-/// ### 中文
-/// 有界 MPSC 算法使用的单个 ring 槽位（序号 + 载荷）。
-struct RingSlot<T> {
-    /// ### English
-    /// Slot sequence used by the bounded ring algorithm.
-    ///
-    /// ### 中文
-    /// 有界 ring 算法使用的槽位序号。
-    seq: AtomicUsize,
-    /// ### English
-    /// Payload storage written by producers and read by the single consumer.
-    ///
-    /// ### 中文
-    /// 载荷存储区：由生产者写入、单消费者读取。
-    value: UnsafeCell<MaybeUninit<T>>,
-}
-
-unsafe impl<T: Send> Send for RingSlot<T> {}
-unsafe impl<T: Send> Sync for RingSlot<T> {}
 
 /// ### English
 /// Bounded lock-free MPSC queue (multi-producer, single-consumer).
@@ -80,17 +56,11 @@ pub(crate) struct BoundedMpscQueue<T> {
     /// 用于索引 `slots` 的掩码（capacity 为 2 的幂）。
     mask: usize,
     /// ### English
-    /// Total ring capacity (power of two).
-    ///
-    /// ### 中文
-    /// ring 总容量（2 的幂）。
-    capacity: usize,
-    /// ### English
     /// Ring-buffer storage.
     ///
     /// ### 中文
     /// ring buffer 存储区。
-    slots: Box<[RingSlot<T>]>,
+    slots: Box<[BoundedRingSlot<T>]>,
 }
 
 unsafe impl<T: Send> Send for BoundedMpscQueue<T> {}
@@ -106,13 +76,10 @@ impl<T> BoundedMpscQueue<T> {
         let capacity = capacity.max(1).next_power_of_two();
         debug_assert!(capacity.is_power_of_two());
 
-        let mut slots = Vec::with_capacity(capacity);
-        for i in 0..capacity {
-            slots.push(RingSlot {
-                seq: AtomicUsize::new(i),
-                value: UnsafeCell::new(MaybeUninit::uninit()),
-            });
-        }
+        let slots = (0..capacity)
+            .map(BoundedRingSlot::new)
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
 
         Self {
             head: AtomicUsize::new(0),
@@ -120,8 +87,7 @@ impl<T> BoundedMpscQueue<T> {
             tail: AtomicUsize::new(0),
             _pad_tail: [0; PAD_ATOMIC_USIZE],
             mask: capacity - 1,
-            capacity,
-            slots: slots.into_boxed_slice(),
+            slots,
         }
     }
 
@@ -141,34 +107,7 @@ impl<T> BoundedMpscQueue<T> {
     ///
     /// 成功返回 `Ok(())`；若 ring 已满则返回 `Err(value)`。
     pub(crate) fn try_push(&self, value: T) -> Result<(), T> {
-        let mut pos = self.head.load(Ordering::Relaxed);
-        loop {
-            let slot = &self.slots[pos & self.mask];
-            let seq = slot.seq.load(Ordering::Acquire);
-            let diff = seq.wrapping_sub(pos) as isize;
-
-            if diff == 0 {
-                match self.head.compare_exchange_weak(
-                    pos,
-                    pos.wrapping_add(1),
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                ) {
-                    Ok(_) => {
-                        unsafe {
-                            (*slot.value.get()).write(value);
-                        }
-                        slot.seq.store(pos.wrapping_add(1), Ordering::Release);
-                        return Ok(());
-                    }
-                    Err(updated) => pos = updated,
-                }
-            } else if diff < 0 {
-                return Err(value);
-            } else {
-                pos = self.head.load(Ordering::Relaxed);
-            }
-        }
+        bounded_mpsc_try_push(&self.head, &self.slots, self.mask, value)
     }
 
     /// ### English
@@ -177,21 +116,12 @@ impl<T> BoundedMpscQueue<T> {
     /// ### 中文
     /// pop 一个元素（单消费者）。
     pub(crate) fn pop(&self) -> Option<T> {
-        let pos = self.tail.load(Ordering::Relaxed);
-        let slot = &self.slots[pos & self.mask];
-        let seq = slot.seq.load(Ordering::Acquire);
-        let diff = seq.wrapping_sub(pos.wrapping_add(1)) as isize;
-
-        if diff != 0 {
-            return None;
-        }
-
-        self.tail.store(pos.wrapping_add(1), Ordering::Relaxed);
-
-        let value = unsafe { (*slot.value.get()).assume_init_read() };
-        slot.seq
-            .store(pos.wrapping_add(self.capacity), Ordering::Release);
-        Some(value)
+        bounded_mpsc_pop(
+            &self.tail,
+            &self.slots,
+            self.mask,
+            self.mask.wrapping_add(1),
+        )
     }
 }
 

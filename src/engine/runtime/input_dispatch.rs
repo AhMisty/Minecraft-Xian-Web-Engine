@@ -25,6 +25,7 @@ use super::keyboard::{glfw_key_to_code, glfw_key_to_key};
 /// #### 参数
 /// - `servo_webview`：目标 Servo `WebView`。
 /// - `raw`：ABI 输入事件载荷。
+#[inline]
 pub(super) fn dispatch_queued_input_event(
     servo_webview: &servo::WebView,
     raw: XianWebEngineInputEvent,

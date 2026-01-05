@@ -20,12 +20,30 @@ use super::XianWebEngineView;
 /// If the view is inactive, events are treated as accepted and dropped (fast path).
 /// Unknown event kinds are treated as accepted and dropped.
 ///
+/// #### Parameters
+/// - `view`: View pointer returned by `xian_web_engine_view_create` (must not be NULL).
+/// - `events`: Pointer to an array of `count` input events (must not be NULL).
+/// - `count`: Number of events in the `events` array.
+///
+/// #### Safety
+/// - `view` must be a valid pointer returned by `xian_web_engine_view_create`.
+/// - If `count != 0`, `events` must be valid for reads of `count` `XianWebEngineInputEvent` values.
+///
 /// ### 中文
 /// 向 view 发送一批输入事件。
 ///
 /// 返回实际接收的事件数量（若队列满，可能小于 `count`）。
 /// 若 view 处于 inactive，则会把事件视为“已接收”并直接丢弃（快路径）。
 /// 未知事件类型会视为“已接收”并直接丢弃。
+///
+/// #### 参数
+/// - `view`：由 `xian_web_engine_view_create` 返回的 view 指针（必须非 NULL）。
+/// - `events`：指向长度为 `count` 的输入事件数组（必须非 NULL）。
+/// - `count`：`events` 数组长度。
+///
+/// #### 安全
+/// - `view` 必须是由 `xian_web_engine_view_create` 返回的有效指针。
+/// - 若 `count != 0`，则 `events` 必须至少可读 `count` 个 `XianWebEngineInputEvent` 元素。
 pub unsafe extern "C" fn xian_web_engine_view_send_input_events(
     view: *mut XianWebEngineView,
     events: *const XianWebEngineInputEvent,

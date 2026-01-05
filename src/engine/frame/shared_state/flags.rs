@@ -20,6 +20,7 @@ impl SharedFrameState {
     ///
     /// #### 参数
     /// - `resizing`：是否进入 resizing 状态。
+    #[inline]
     pub fn set_resizing(&self, resizing: bool) {
         self.frame_meta
             .flags
@@ -32,6 +33,7 @@ impl SharedFrameState {
     ///
     /// ### 中文
     /// 返回是否处于 resizing 状态。
+    #[inline]
     pub fn is_resizing(&self) -> bool {
         self.frame_meta.flags.resizing.load(Ordering::Relaxed) != 0
     }
@@ -47,6 +49,7 @@ impl SharedFrameState {
     ///
     /// #### 参数
     /// - `active`：是否将 view 设为 active。
+    #[inline]
     pub fn set_active(&self, active: bool) {
         self.frame_meta
             .flags
@@ -59,6 +62,7 @@ impl SharedFrameState {
     ///
     /// ### 中文
     /// 返回 view 是否 active。
+    #[inline]
     pub fn is_active(&self) -> bool {
         self.frame_meta.flags.active.load(Ordering::Relaxed) != 0
     }

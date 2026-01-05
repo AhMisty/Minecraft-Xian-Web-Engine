@@ -17,6 +17,7 @@
 ///
 /// #### 参数
 /// - `glfw_key`：GLFW 键码。
+#[inline]
 pub(in super::super) fn glfw_key_to_code(glfw_key: u32) -> servo::Code {
     use servo::Code;
 

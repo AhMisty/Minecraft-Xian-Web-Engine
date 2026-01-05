@@ -24,6 +24,7 @@ impl SharedFrameState {
     ///
     /// #### 参数
     /// - `slot`：要读取的槽位索引。
+    #[inline]
     pub fn slot_seq_relaxed(&self, slot: usize) -> u64 {
         self.slots[slot].frame_seq.load(Ordering::Relaxed)
     }
@@ -39,6 +40,7 @@ impl SharedFrameState {
     ///
     /// #### 参数
     /// - `slot`：要读取的槽位索引。
+    #[inline]
     pub fn slot_state(&self, slot: usize) -> u8 {
         self.slots[slot].state.load(Ordering::Acquire)
     }
@@ -54,6 +56,7 @@ impl SharedFrameState {
     ///
     /// #### 参数
     /// - `slot`：要读取的槽位索引。
+    #[inline]
     pub fn slot_state_relaxed(&self, slot: usize) -> u8 {
         self.slots[slot].state.load(Ordering::Relaxed)
     }
@@ -73,6 +76,7 @@ impl SharedFrameState {
     /// - `slot`：要更新的槽位索引。
     /// - `current`：期望的当前状态。
     /// - `new`：CAS 成功时写入的新状态。
+    #[inline]
     pub fn compare_exchange_state(&self, slot: usize, current: u8, new: u8) -> Result<u8, u8> {
         self.slots[slot]
             .state
@@ -94,6 +98,7 @@ impl SharedFrameState {
     /// - `slot`：要更新的槽位索引。
     /// - `current`：期望的当前状态。
     /// - `new`：CAS 成功时写入的新状态。
+    #[inline]
     pub fn compare_exchange_state_relaxed(&self, slot: usize, current: u8, new: u8) -> bool {
         self.slots[slot]
             .state
@@ -114,6 +119,7 @@ impl SharedFrameState {
     /// #### 参数
     /// - `slot`：要更新的槽位索引。
     /// - `state`：要写入的状态值。
+    #[inline]
     pub fn store_state(&self, slot: usize, state: u8) {
         self.slots[slot].state.store(state, Ordering::Release);
     }

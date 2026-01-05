@@ -31,6 +31,7 @@ impl SharedFrameState {
     /// - `slot`：已渲染完成的槽位索引。
     /// - `producer_fence`：生产者 fence 句柄（`GLsync` 转 `u64`），不可用/禁用则为 0。
     /// - `new_frame_seq`：新的帧序号（必须非 0）。
+    #[inline]
     pub fn publish(&self, slot: usize, producer_fence: u64, new_frame_seq: u64) {
         let slot_state = &self.slots[slot];
         slot_state.frame_seq.store(new_frame_seq, Ordering::Relaxed);
@@ -56,6 +57,7 @@ impl SharedFrameState {
     /// #### 参数
     /// - `slot`：需要更新的槽位索引。
     /// - `size`：新的槽位尺寸（像素）。
+    #[inline]
     pub fn set_slot_size(&self, slot: usize, size: PhysicalSize<u32>) {
         if slot >= TRIPLE_BUFFER_COUNT {
             return;
@@ -79,6 +81,7 @@ impl SharedFrameState {
     /// #### 参数
     /// - `slot`：需要更新的槽位索引。
     /// - `texture_id`：该槽位对应的 GL 纹理 ID。
+    #[inline]
     pub fn set_texture_id(&self, slot: usize, texture_id: u32) {
         self.slots[slot]
             .texture_id

@@ -27,6 +27,7 @@ impl SharedFrameState {
     /// #### 参数
     /// - `slot`：消费者之前 acquire 的槽位索引。
     /// - `consumer_fence`：consumer fence 句柄（`GLsync` 转 `u64`），为 0 则立即释放。
+    #[inline]
     pub fn release_slot(&self, slot: usize, consumer_fence: u64) {
         if slot >= TRIPLE_BUFFER_COUNT {
             return;

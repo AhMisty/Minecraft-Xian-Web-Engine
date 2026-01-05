@@ -4,58 +4,66 @@
 //! ### 中文
 //! 引擎生命周期相关的 C ABI 绑定（create/destroy/tick）。
 
-use std::ffi::{c_char, c_void};
+use std::ptr;
 
 use dpi::PhysicalSize;
 
-use super::XianWebEngine;
+use super::{XianWebEngine, XianWebEngineConfig};
 use crate::engine::EngineRuntime;
 
 #[unsafe(no_mangle)]
 /// ### English
-/// Creates an engine bound to a Java-created GLFW OpenGL context.
+/// Creates an engine using a config struct.
 ///
-/// `resources_dir` and `config_dir` are optional NUL-terminated UTF-8 strings.
-/// Passing NULL or an empty string means "unset".
+/// Return value: NULL on failure.
 ///
-/// `thread_pool_cap` controls the maximum worker threads used by Servo's internal thread pools.
-/// - `0` means "no cap" (use CPU parallelism).
-/// - Otherwise, Servo thread pools are capped to `min(CPU, thread_pool_cap)`.
+/// The caller must provide `glfw_shared_window` and `glfw_api` in the config.
+///
+/// #### Parameters
+/// - `config`: Engine configuration (must not be NULL).
+///
+/// #### Safety
+/// - `config` must be valid for reads of at least `sizeof(XianWebEngineConfig)` bytes.
+/// - The config header must have a compatible `struct_size` and the correct ABI version.
 ///
 /// ### 中文
-/// 基于 Java 创建的 GLFW OpenGL 上下文创建引擎。
+/// 使用配置结构体创建引擎。
 ///
-/// `resources_dir` 与 `config_dir` 为可选的 NUL 结尾 UTF-8 字符串；
-/// 传入 NULL 或空字符串表示“不设置”。
+/// 返回值：失败返回 NULL。
 ///
-/// `thread_pool_cap` 用于限制 Servo 内部线程池的最大工作线程数：
-/// - `0` 表示“不封顶”（使用 CPU 并行度）。
-/// - 非 0 时，线程池上限为 `min(CPU, thread_pool_cap)`。
-pub extern "C" fn xian_web_engine_create(
-    glfw_shared_window: *mut c_void,
-    default_width: u32,
-    default_height: u32,
-    resources_dir: *const c_char,
-    config_dir: *const c_char,
-    thread_pool_cap: u32,
+/// 调用方必须在 config 中提供 `glfw_shared_window` 与 `glfw_api`。
+///
+/// #### 参数
+/// - `config`：引擎配置（必须非 NULL）。
+///
+/// #### 安全
+/// - `config` 必须至少可读 `sizeof(XianWebEngineConfig)` 字节。
+/// - 配置头部的 `struct_size` 必须兼容，且 ABI 版本必须匹配。
+pub unsafe extern "C" fn xian_web_engine_create(
+    config: *const XianWebEngineConfig,
 ) -> *mut XianWebEngine {
-    if glfw_shared_window.is_null() {
-        return std::ptr::null_mut();
+    let Some(config) = (unsafe { super::read_abi_struct(config) }) else {
+        return ptr::null_mut();
+    };
+    if config.glfw_shared_window.is_null() {
+        return ptr::null_mut();
     }
 
-    let default_size = PhysicalSize::new(default_width.max(1), default_height.max(1));
+    let default_size = PhysicalSize::new(config.default_width.max(1), config.default_height.max(1));
 
-    let resources_dir = unsafe { super::cstr_to_path(resources_dir) };
-    let config_dir = unsafe { super::cstr_to_path(config_dir) };
+    let resources_dir = unsafe { super::cstr_to_path(config.resources_dir) };
+    let config_dir = unsafe { super::cstr_to_path(config.config_dir) };
 
     let Ok(runtime) = EngineRuntime::new(
-        glfw_shared_window,
+        config.glfw_shared_window,
+        config.glfw_api,
         default_size,
         resources_dir,
         config_dir,
-        thread_pool_cap,
+        config.thread_pool_cap,
+        config.engine_flags,
     ) else {
-        return std::ptr::null_mut();
+        return ptr::null_mut();
     };
 
     Box::into_raw(Box::new(XianWebEngine { runtime }))
@@ -68,10 +76,23 @@ pub extern "C" fn xian_web_engine_create(
 /// This shuts down the dedicated Servo thread and destroys any remaining views/resources created by
 /// this engine. Do not use any views after destroying the engine.
 ///
+/// #### Parameters
+/// - `engine`: Engine pointer returned by `xian_web_engine_create` (may be NULL).
+///
+/// #### Safety
+/// If non-NULL, `engine` must be a valid pointer returned by `xian_web_engine_create`, and must not
+/// be used after this call returns.
+///
 /// ### 中文
 /// 销毁由 `xian_web_engine_create` 创建的引擎。
 ///
 /// 该操作会关闭 Servo 线程并销毁该引擎创建的所有剩余 view/资源；engine destroy 之后不要再使用任何 view。
+///
+/// #### 参数
+/// - `engine`：由 `xian_web_engine_create` 返回的引擎指针（允许为 NULL）。
+///
+/// #### 安全
+/// 若 `engine` 非 NULL，则它必须是由 `xian_web_engine_create` 返回的有效指针，且本次调用返回后不得再使用。
 pub unsafe extern "C" fn xian_web_engine_destroy(engine: *mut XianWebEngine) {
     if engine.is_null() {
         return;
@@ -85,8 +106,20 @@ pub unsafe extern "C" fn xian_web_engine_destroy(engine: *mut XianWebEngine) {
 /// ### English
 /// Drains pending vsync callbacks (Java-driven refresh).
 ///
+/// #### Parameters
+/// - `engine`: Engine pointer returned by `xian_web_engine_create` (may be NULL).
+///
+/// #### Safety
+/// If non-NULL, `engine` must be a valid pointer returned by `xian_web_engine_create`.
+///
 /// ### 中文
 /// 执行待处理的 vsync 回调（由 Java 驱动 refresh）。
+///
+/// #### 参数
+/// - `engine`：由 `xian_web_engine_create` 返回的引擎指针（允许为 NULL）。
+///
+/// #### 安全
+/// 若 `engine` 非 NULL，则它必须是由 `xian_web_engine_create` 返回的有效指针。
 pub unsafe extern "C" fn xian_web_engine_tick(engine: *mut XianWebEngine) {
     if engine.is_null() {
         return;

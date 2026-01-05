@@ -91,7 +91,7 @@ impl<T> OneShot<T> {
     pub(crate) fn send(&self, value: T) -> bool {
         if self
             .state
-            .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
+            .compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed)
             .is_err()
         {
             return false;

@@ -94,6 +94,12 @@ pub(super) struct WebEngineViewHandleInit {
     /// Servo 线程句柄（用于 `unpark` 唤醒）。
     pub thread_handle: thread::Thread,
     /// ### English
+    /// Cached flag: whether the embedder should unpark the Servo thread when scheduling work.
+    ///
+    /// ### 中文
+    /// 缓存标志：宿主在调度工作时是否需要 unpark Servo 线程。
+    pub should_unpark: bool,
+    /// ### English
     /// Whether the view runs without recording consumer fences (unsafe, for advanced embedders).
     ///
     /// ### 中文
@@ -174,6 +180,12 @@ pub struct WebEngineViewHandle {
     /// Servo 线程句柄（用于 `unpark` 唤醒）。
     thread_handle: thread::Thread,
     /// ### English
+    /// Cached flag: whether the embedder should unpark the Servo thread when scheduling work.
+    ///
+    /// ### 中文
+    /// 缓存标志：宿主在调度工作时是否需要 unpark Servo 线程。
+    should_unpark: bool,
+    /// ### English
     /// Whether the view runs without recording consumer fences (unsafe, for advanced embedders).
     ///
     /// ### 中文
@@ -206,6 +218,7 @@ impl WebEngineViewHandle {
             pending_queue,
             command_queue,
             thread_handle,
+            should_unpark,
             unsafe_no_consumer_fence,
         } = init;
         Self {
@@ -220,6 +233,7 @@ impl WebEngineViewHandle {
             pending_queue,
             command_queue,
             thread_handle,
+            should_unpark,
             unsafe_no_consumer_fence,
         }
     }
@@ -258,6 +272,7 @@ impl WebEngineViewHandle {
     ///
     /// ### 中文
     /// 返回该 view 是否 active。
+    #[inline]
     pub fn is_active(&self) -> bool {
         self.shared.is_active()
     }
@@ -279,6 +294,7 @@ impl WebEngineViewHandle {
     /// #### 参数
     /// - `x`：设备像素坐标 X（f32）。
     /// - `y`：设备像素坐标 Y（f32）。
+    #[inline]
     #[must_use = "returns whether the caller should wake the Servo thread"]
     pub fn queue_mouse_move(&self, x: f32, y: f32) -> bool {
         self.mouse_move.set(x, y);
@@ -302,6 +318,7 @@ impl WebEngineViewHandle {
     /// - `size`：请求的尺寸（会 clamp 至至少 1x1）。
     ///
     /// 仅当返回 `true` 时建议唤醒 Servo 线程（见 [`Self::wake`]）。
+    #[inline]
     #[must_use = "returns whether the caller should wake the Servo thread"]
     pub fn queue_resize(&self, size: PhysicalSize<u32>) -> bool {
         let width = size.width.max(1);
@@ -325,6 +342,7 @@ impl WebEngineViewHandle {
     ///
     /// #### 参数
     /// - `events`：要 push 的事件切片。
+    #[inline]
     pub fn push_input_events(&self, events: &[XianWebEngineInputEvent]) -> usize {
         self.input_queue.try_push_slice(events)
     }
@@ -339,6 +357,7 @@ impl WebEngineViewHandle {
     /// 标记“非鼠标移动输入”待处理（合并标记），并调度处理。
     ///
     /// 仅当返回 `true` 时表示本次为首次 pending 标记，且建议唤醒 Servo 线程（见 [`Self::wake`]）。
+    #[inline]
     #[must_use = "returns whether the caller should wake the Servo thread"]
     pub fn notify_input_pending(&self) -> bool {
         if !self.input_queue.mark_pending() {
@@ -352,8 +371,11 @@ impl WebEngineViewHandle {
     ///
     /// ### 中文
     /// 唤醒 Servo 线程（`unpark`）。
+    #[inline]
     pub fn wake(&self) {
-        self.thread_handle.unpark();
+        if self.should_unpark {
+            self.thread_handle.unpark();
+        }
     }
 
     /// ### English
@@ -371,6 +393,7 @@ impl WebEngineViewHandle {
     ///
     /// #### 参数
     /// - `url`：要加载的 URL 字符串（latest-wins）。
+    #[inline]
     #[must_use = "returns whether the caller should wake the Servo thread"]
     pub fn load_url(&self, url: &str) -> bool {
         self.load_url.set_str(url);
@@ -382,6 +405,7 @@ impl WebEngineViewHandle {
     ///
     /// ### 中文
     /// 尝试 acquire 最新 READY 帧（消费者侧）。
+    #[inline]
     pub fn acquire_frame(&self) -> Option<AcquiredFrame> {
         self.shared.try_acquire_front()
     }
@@ -402,6 +426,7 @@ impl WebEngineViewHandle {
     ///
     /// #### 参数
     /// - `active`：是否将该 view 设为 active。
+    #[inline]
     #[must_use = "returns whether the caller should wake the Servo thread"]
     pub fn set_active(&self, active: bool) -> bool {
         if self.shared.is_active() == active {
@@ -429,6 +454,7 @@ impl WebEngineViewHandle {
     /// #### 参数
     /// - `slot`：三缓冲槽位索引（0..=2）。
     /// - `consumer_fence`：consumer fence 句柄（`GLsync` 转 `u64`），为 0 则跳过。
+    #[inline]
     pub fn release_slot_with_fence(&self, slot: u32, consumer_fence: u64) {
         let slot = slot as usize;
         if slot >= TRIPLE_BUFFER_COUNT {
@@ -454,6 +480,6 @@ impl Drop for WebEngineViewHandle {
             id: self.id,
             token: self.token,
         });
-        self.thread_handle.unpark();
+        self.wake();
     }
 }

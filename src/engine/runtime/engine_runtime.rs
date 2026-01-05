@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use dpi::PhysicalSize;
 
+use crate::engine::EmbedderGlfwApi;
 use crate::engine::flags;
 use crate::engine::frame::SharedFrameState;
 use crate::engine::input::{CoalescedMouseMove, CoalescedResize, InputEventQueue};
@@ -24,6 +25,8 @@ use super::pending::PendingIdQueue;
 use super::queue::CommandQueue;
 use super::servo_thread;
 use super::view_handle::{WebEngineViewHandle, WebEngineViewHandleInit};
+
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// ### English
 /// Engine runtime that owns the dedicated Servo thread.
@@ -67,6 +70,12 @@ pub struct EngineRuntime {
     /// ### 中文
     /// pending view-id 队列：用于合并每 view 的工作调度。
     pending_queue: Arc<PendingIdQueue>,
+    /// ### English
+    /// Cached flag: whether the runtime should unpark the Servo thread when pushing work.
+    ///
+    /// ### 中文
+    /// 缓存标志：push 工作时是否需要 unpark Servo 线程。
+    should_unpark: bool,
 }
 
 impl EngineRuntime {
@@ -81,10 +90,12 @@ impl EngineRuntime {
     ///
     /// #### Parameters
     /// - `glfw_shared_window`: Embedder-owned GLFW window whose context will be shared with the Servo thread.
+    /// - `glfw_api`: Embedder-provided GLFW function pointer table.
     /// - `default_size`: Fallback view size used when the embedder passes an invalid size.
     /// - `resources_dir`: Optional resource directory override.
     /// - `config_dir`: Optional config directory override.
     /// - `thread_pool_cap`: Servo worker thread cap (`0` means no cap).
+    /// - `engine_flags`: Engine flags bitmask (see `XIAN_WEB_ENGINE_ENGINE_FLAG_*`).
     ///
     /// ### 中文
     /// 创建一个新的引擎运行时，并初始化独立的 Servo 线程。
@@ -97,47 +108,57 @@ impl EngineRuntime {
     ///
     /// #### 参数
     /// - `glfw_shared_window`：宿主侧 GLFW window；其上下文会与 Servo 线程共享。
+    /// - `glfw_api`：宿主提供的 GLFW 函数指针表。
     /// - `default_size`：当宿主传入无效尺寸时使用的兜底尺寸。
     /// - `resources_dir`：可选的资源目录覆盖。
     /// - `config_dir`：可选的配置目录覆盖。
     /// - `thread_pool_cap`：Servo 工作线程上限（`0` 表示不封顶）。
+    /// - `engine_flags`：引擎标志位掩码（见 `XIAN_WEB_ENGINE_ENGINE_FLAG_*`）。
     pub fn new(
         glfw_shared_window: *mut c_void,
+        glfw_api: EmbedderGlfwApi,
         default_size: PhysicalSize<u32>,
         resources_dir: Option<PathBuf>,
         config_dir: Option<PathBuf>,
         thread_pool_cap: u32,
+        engine_flags: u32,
     ) -> Result<Self, String> {
         let glfw_shared_window_handle = glfw_shared_window as usize;
+        let should_unpark = (engine_flags & flags::XIAN_WEB_ENGINE_ENGINE_FLAG_NO_PARK) == 0;
 
         let vsync_queue = Arc::new(VsyncCallbackQueue::with_capacity(4096));
-        let vsync_queue_for_thread = vsync_queue.clone();
+        let vsync_queue_thread = vsync_queue.clone();
 
         let pending_queue = Arc::new(PendingIdQueue::with_capacity(64 * 1024));
-        let pending_queue_for_thread = pending_queue.clone();
+        let pending_queue_thread = pending_queue.clone();
 
         let command_queue = Arc::new(CommandQueue::new());
-        let command_queue_for_thread = command_queue.clone();
+        let command_queue_thread = command_queue.clone();
 
         let init = Arc::new(OneShot::new(thread::current()));
-        let init_for_thread = init.clone();
+        let init_thread = init.clone();
 
-        let thread = thread::spawn(move || {
-            servo_thread::run_servo_thread(
-                glfw_shared_window_handle,
-                resources_dir,
-                config_dir,
-                vsync_queue_for_thread,
-                pending_queue_for_thread,
-                command_queue_for_thread,
-                thread_pool_cap,
-                init_for_thread,
-            );
-        });
+        let thread = thread::Builder::new()
+            .name("XianServoThread".to_string())
+            .spawn(move || {
+                servo_thread::run_servo_thread(
+                    glfw_shared_window_handle,
+                    glfw_api,
+                    resources_dir,
+                    config_dir,
+                    vsync_queue_thread,
+                    pending_queue_thread,
+                    command_queue_thread,
+                    thread_pool_cap,
+                    engine_flags,
+                    init_thread,
+                );
+            })
+            .map_err(|err| format!("Failed to spawn Servo thread: {err}"))?;
 
         let thread_handle = thread.thread().clone();
 
-        match init.recv_timeout(Duration::from_secs(30)) {
+        match init.recv_timeout(RESPONSE_TIMEOUT) {
             Some(Ok(())) => Ok(Self {
                 default_size,
                 command_queue,
@@ -145,15 +166,20 @@ impl EngineRuntime {
                 thread_handle,
                 vsync_queue,
                 pending_queue,
+                should_unpark,
             }),
             Some(Err(err)) => {
-                thread_handle.unpark();
+                if should_unpark {
+                    thread_handle.unpark();
+                }
                 let _ = thread.join();
                 Err(err)
             }
             None => {
                 command_queue.push(Command::Shutdown);
-                thread_handle.unpark();
+                if should_unpark {
+                    thread_handle.unpark();
+                }
                 let _ = thread.join();
                 Err("Timed out initializing Servo thread".to_string())
             }
@@ -227,9 +253,11 @@ impl EngineRuntime {
         }) {
             return Err("Engine is shutting down".to_string());
         }
-        self.thread_handle.unpark();
+        if self.should_unpark {
+            self.thread_handle.unpark();
+        }
 
-        match response.recv_timeout(Duration::from_secs(30)) {
+        match response.recv_timeout(RESPONSE_TIMEOUT) {
             Some(Ok((id, token))) => Ok(WebEngineViewHandle::new(WebEngineViewHandleInit {
                 id,
                 token,
@@ -242,6 +270,7 @@ impl EngineRuntime {
                 pending_queue: self.pending_queue.clone(),
                 command_queue: self.command_queue.clone(),
                 thread_handle: self.thread_handle.clone(),
+                should_unpark: self.should_unpark,
                 unsafe_no_consumer_fence,
             })),
             Some(Err(err)) => Err(err),
@@ -266,7 +295,9 @@ impl EngineRuntime {
     pub fn shutdown(&mut self) {
         if let Some(thread) = self.thread.take() {
             self.command_queue.push(Command::Shutdown);
-            self.thread_handle.unpark();
+            if self.should_unpark {
+                self.thread_handle.unpark();
+            }
             let _ = thread.join();
             self.command_queue.close();
         }

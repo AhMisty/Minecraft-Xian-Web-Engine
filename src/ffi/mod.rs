@@ -11,17 +11,18 @@
 //! 所有导出符号均为 `extern "C"` 函数；结构体使用 `#[repr(C)]`。
 //! Java/Panama 传入的字符串必须是以 NUL 结尾的 UTF-8（C 字符串）；Rust 会校验 UTF-8，
 //! 且在遇到第一个 NUL 字节处截断。
-mod abi;
+mod config;
 mod engine;
 mod frame;
-mod glfw;
 mod input;
 mod view;
 
-use std::ffi::{CStr, c_char};
+use std::ffi::{CStr, c_char, c_void};
+use std::mem::size_of;
 use std::path::PathBuf;
+use std::ptr;
 
-use crate::engine::{AcquiredFrame, EngineRuntime, WebEngineViewHandle};
+use crate::engine::{AcquiredFrame, EmbedderGlfwApi, EngineRuntime, WebEngineViewHandle};
 
 #[repr(C)]
 /// ### English
@@ -134,12 +135,215 @@ pub struct XianWebEngineFrame {
     pub height: u32,
 }
 
+#[repr(C)]
+/// ### English
+/// Engine creation configuration passed via the C ABI.
+///
+/// All string pointers are optional NUL-terminated UTF-8 C strings; NULL or empty means "unset".
+///
+/// ### 中文
+/// 通过 C ABI 传递的引擎创建配置。
+///
+/// 所有字符串指针均为可选的 NUL 结尾 UTF-8 C 字符串；NULL 或空字符串表示“不设置”。
+pub struct XianWebEngineConfig {
+    /// ### English
+    /// Size of this struct in bytes (must be `sizeof(XianWebEngineConfig)`).
+    ///
+    /// ### 中文
+    /// 该结构体的字节大小（必须等于 `sizeof(XianWebEngineConfig)`）。
+    pub struct_size: u32,
+    /// ### English
+    /// ABI version expected by the caller (must match `xian_web_engine_abi_version()`).
+    ///
+    /// ### 中文
+    /// 调用方期望的 ABI 版本（必须与 `xian_web_engine_abi_version()` 一致）。
+    pub abi_version: u32,
+    /// ### English
+    /// Embedder-owned GLFW window whose context will be shared with the Servo thread.
+    ///
+    /// ### 中文
+    /// 宿主侧 GLFW window；其上下文会与 Servo 线程共享。
+    pub glfw_shared_window: *mut c_void,
+    /// ### English
+    /// Embedder-provided GLFW function pointer table.
+    ///
+    /// On Windows builds, all function pointers must be non-zero.
+    ///
+    /// ### 中文
+    /// 宿主提供的 GLFW 函数指针表。
+    ///
+    /// Windows 构建下，所有函数指针必须非 0。
+    pub glfw_api: EmbedderGlfwApi,
+    /// ### English
+    /// Default view width in pixels (clamped to >= 1).
+    ///
+    /// ### 中文
+    /// 默认 view 宽度（像素；会 clamp 至 >= 1）。
+    pub default_width: u32,
+    /// ### English
+    /// Default view height in pixels (clamped to >= 1).
+    ///
+    /// ### 中文
+    /// 默认 view 高度（像素；会 clamp 至 >= 1）。
+    pub default_height: u32,
+    /// ### English
+    /// Servo worker thread cap (`0` means no cap).
+    ///
+    /// ### 中文
+    /// Servo 工作线程上限（`0` 表示不封顶）。
+    pub thread_pool_cap: u32,
+    /// ### English
+    /// Engine flags bitmask (see `XIAN_WEB_ENGINE_ENGINE_FLAG_*`).
+    ///
+    /// ### 中文
+    /// 引擎标志位掩码（见 `XIAN_WEB_ENGINE_ENGINE_FLAG_*`）。
+    pub engine_flags: u32,
+    /// ### English
+    /// Optional resource directory override (NUL-terminated UTF-8).
+    ///
+    /// ### 中文
+    /// 可选资源目录覆盖（NUL 结尾 UTF-8）。
+    pub resources_dir: *const c_char,
+    /// ### English
+    /// Optional config directory override (NUL-terminated UTF-8).
+    ///
+    /// ### 中文
+    /// 可选配置目录覆盖（NUL 结尾 UTF-8）。
+    pub config_dir: *const c_char,
+}
+
+#[repr(C)]
+/// ### English
+/// View creation configuration passed via the C ABI.
+///
+/// ### 中文
+/// 通过 C ABI 传递的 view 创建配置。
+pub struct XianWebEngineViewConfig {
+    /// ### English
+    /// Size of this struct in bytes (must be `sizeof(XianWebEngineViewConfig)`).
+    ///
+    /// ### 中文
+    /// 该结构体的字节大小（必须等于 `sizeof(XianWebEngineViewConfig)`）。
+    pub struct_size: u32,
+    /// ### English
+    /// ABI version expected by the caller (must match `xian_web_engine_abi_version()`).
+    ///
+    /// ### 中文
+    /// 调用方期望的 ABI 版本（必须与 `xian_web_engine_abi_version()` 一致）。
+    pub abi_version: u32,
+    /// ### English
+    /// Engine handle returned by `xian_web_engine_create` (must be non-NULL).
+    ///
+    /// ### 中文
+    /// 由 `xian_web_engine_create` 返回的 engine 句柄（必须非 NULL）。
+    pub engine: *mut XianWebEngine,
+    /// ### English
+    /// Initial view width in pixels (0 is treated as engine default; clamped to >= 1).
+    ///
+    /// ### 中文
+    /// 初始 view 宽度（像素；0 表示使用引擎默认值；会 clamp 至 >= 1）。
+    pub width: u32,
+    /// ### English
+    /// Initial view height in pixels (0 is treated as engine default; clamped to >= 1).
+    ///
+    /// ### 中文
+    /// 初始 view 高度（像素；0 表示使用引擎默认值；会 clamp 至 >= 1）。
+    pub height: u32,
+    /// ### English
+    /// Target FPS for fixed-interval refresh (0 means external-vsync mode).
+    ///
+    /// ### 中文
+    /// 固定间隔 refresh 的目标 FPS（0 表示外部 vsync 模式）。
+    pub target_fps: u32,
+    /// ### English
+    /// View flags bitmask (see `XIAN_WEB_ENGINE_VIEW_FLAG_*`).
+    ///
+    /// ### 中文
+    /// view 标志位掩码（见 `XIAN_WEB_ENGINE_VIEW_FLAG_*`）。
+    pub view_flags: u32,
+}
+
 /// ### English
 /// C ABI version for `xian_web_engine`.
 ///
 /// ### 中文
 /// `xian_web_engine` 的 C ABI 版本号。
-const XIAN_WEB_ENGINE_ABI_VERSION: u32 = 1;
+const XIAN_WEB_ENGINE_ABI_VERSION: u32 = 3;
+
+#[repr(C)]
+struct AbiHeader {
+    struct_size: u32,
+    abi_version: u32,
+}
+
+const _: () = {
+    assert!(std::mem::offset_of!(XianWebEngineConfig, struct_size) == 0);
+    assert!(std::mem::offset_of!(XianWebEngineConfig, abi_version) == 4);
+    assert!(std::mem::offset_of!(XianWebEngineViewConfig, struct_size) == 0);
+    assert!(std::mem::offset_of!(XianWebEngineViewConfig, abi_version) == 4);
+};
+
+#[unsafe(no_mangle)]
+/// ### English
+/// Returns the C ABI version.
+///
+/// ### 中文
+/// 返回 C ABI 版本号。
+pub extern "C" fn xian_web_engine_abi_version() -> u32 {
+    XIAN_WEB_ENGINE_ABI_VERSION
+}
+
+#[inline]
+/// ### English
+/// Reads a `#[repr(C)]` ABI struct from a raw pointer after validating its `struct_size` and
+/// `abi_version` header.
+///
+/// This helper assumes the struct begins with:
+/// - `struct_size: u32`
+/// - `abi_version: u32`
+///
+/// `struct_size` is treated as forward-compatible: values larger than `sizeof(T)` are accepted.
+///
+/// #### Parameters
+/// - `ptr`: Pointer to the ABI struct (may be NULL).
+///
+/// #### Safety
+/// If `ptr` is non-NULL, it must be valid for reads of at least `sizeof(T)` bytes, and must point
+/// to a properly initialized ABI struct whose first two fields match the header described above.
+///
+/// ### 中文
+/// 在校验 `struct_size` 与 `abi_version` 头部后，从原始指针读取 `#[repr(C)]` ABI 结构体。
+///
+/// 该工具函数假定结构体以如下字段开头：
+/// - `struct_size: u32`
+/// - `abi_version: u32`
+///
+/// `struct_size` 采用前向兼容策略：只要不小于 `sizeof(T)` 即视为有效。
+///
+/// #### 参数
+/// - `ptr`：ABI 结构体指针（允许为 NULL）。
+///
+/// #### 安全
+/// 若 `ptr` 非 NULL，则它必须至少可读 `sizeof(T)` 字节，并指向已正确初始化的 ABI 结构体，且其前两个
+/// 字段必须符合上述头部约定。
+unsafe fn read_abi_struct<T>(ptr: *const T) -> Option<T> {
+    if ptr.is_null() {
+        return None;
+    }
+
+    let header = ptr.cast::<AbiHeader>();
+    let struct_size = unsafe { ptr::read_unaligned(ptr::addr_of!((*header).struct_size)) };
+    if struct_size < size_of::<T>() as u32 {
+        return None;
+    }
+
+    let abi_version = unsafe { ptr::read_unaligned(ptr::addr_of!((*header).abi_version)) };
+    if abi_version != XIAN_WEB_ENGINE_ABI_VERSION {
+        return None;
+    }
+
+    Some(unsafe { ptr::read_unaligned(ptr) })
+}
 
 impl From<AcquiredFrame> for XianWebEngineFrame {
     /// ### English
@@ -164,12 +368,45 @@ impl From<AcquiredFrame> for XianWebEngineFrame {
     }
 }
 
+#[inline]
+/// ### English
+/// Converts an optional NUL-terminated UTF-8 C string into `&str`.
+///
+/// Returns `None` for NULL pointers or invalid UTF-8.
+///
+/// #### Parameters
+/// - `ptr`: Optional C string pointer (may be NULL).
+///
+/// #### Safety
+/// `ptr` must be valid and point to a NUL-terminated string for the duration of the call.
+///
+/// ### 中文
+/// 将可选的 NUL 结尾 UTF-8 C 字符串转换为 `&str`。
+///
+/// 对 NULL 指针或 UTF-8 非法返回 `None`。
+///
+/// #### 参数
+/// - `ptr`：可选 C 字符串指针（允许为 NULL）。
+///
+/// #### 安全
+/// `ptr` 在本次调用期间必须有效，并指向以 NUL 结尾的字符串。
+unsafe fn cstr_to_str<'a>(ptr: *const c_char) -> Option<&'a str> {
+    if ptr.is_null() {
+        return None;
+    }
+
+    unsafe { CStr::from_ptr(ptr) }.to_str().ok()
+}
+
 /// ### English
 /// Converts an optional NUL-terminated UTF-8 C string into a `PathBuf`.
 ///
 /// Returns `None` for NULL pointers, invalid UTF-8, or empty strings.
 ///
-/// # Safety
+/// #### Parameters
+/// - `ptr`: Optional C string pointer (may be NULL).
+///
+/// #### Safety
 /// `ptr` must be valid and point to a NUL-terminated string for the duration of the call.
 ///
 /// ### 中文
@@ -177,14 +414,13 @@ impl From<AcquiredFrame> for XianWebEngineFrame {
 ///
 /// 对 NULL 指针、UTF-8 非法或空字符串返回 `None`。
 ///
-/// # Safety
+/// #### 参数
+/// - `ptr`：可选 C 字符串指针（允许为 NULL）。
+///
+/// #### 安全
 /// `ptr` 在本次调用期间必须有效，并指向以 NUL 结尾的字符串。
 unsafe fn cstr_to_path(ptr: *const c_char) -> Option<PathBuf> {
-    if ptr.is_null() {
-        return None;
-    }
-
-    let value = unsafe { CStr::from_ptr(ptr) }.to_str().ok()?;
+    let value = unsafe { cstr_to_str(ptr)? };
     if value.is_empty() {
         return None;
     }

@@ -24,6 +24,7 @@ use super::named_key::glfw_key_to_named_key;
 /// - `glfw_key`：GLFW 键码。
 /// - `key_codepoint`：Unicode 标量值（`0` 表示“未提供”）。
 /// - `modifiers`：修饰键集合（用于 ASCII 回退映射）。
+#[inline]
 pub(in super::super) fn glfw_key_to_key(
     glfw_key: u32,
     key_codepoint: u32,

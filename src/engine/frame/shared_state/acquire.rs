@@ -21,6 +21,7 @@ impl SharedFrameState {
     ///
     /// ### 中文
     /// 尝试将最新的 READY 槽位 acquire 为 HELD（消费者侧）。
+    #[inline]
     pub fn try_acquire_front(&self) -> Option<AcquiredFrame> {
         if self.is_resizing() {
             return None;
@@ -45,6 +46,7 @@ impl SharedFrameState {
     /// 尝试将某个 READY 槽位 acquire 为 HELD，并优先使用 `front` 作为 hint。
     ///
     /// 先对 hint 槽位做快路径 CAS；失败后回退到探测另外两个槽位（三缓冲），并优先选择帧序号更新的槽位。
+    #[inline]
     fn try_acquire_ready_slot(&self, front: usize) -> Option<AcquiredFrame> {
         let front = if front < TRIPLE_BUFFER_COUNT {
             front
@@ -111,6 +113,7 @@ impl SharedFrameState {
     ///
     /// #### 参数
     /// - `slot`：需要构造快照的槽位索引。
+    #[inline]
     fn acquired_frame(&self, slot: usize) -> AcquiredFrame {
         let slot_state = &self.slots[slot];
         let size = PhysicalSize::new(

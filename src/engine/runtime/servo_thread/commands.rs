@@ -75,14 +75,21 @@ pub(super) fn drain_commands(
                 unsafe_no_producer_fence,
                 response,
             } => {
-                let refresh_scheduler_for_view = if target_fps == 0 {
+                let view_scheduler = if target_fps == 0 {
                     None
+                } else if let Some(existing) = refresh_scheduler.as_ref() {
+                    Some(existing.clone())
                 } else {
-                    Some(
-                        refresh_scheduler
-                            .get_or_insert_with(RefreshScheduler::new)
-                            .clone(),
-                    )
+                    match RefreshScheduler::try_new() {
+                        Ok(scheduler) => {
+                            *refresh_scheduler = Some(scheduler.clone());
+                            Some(scheduler)
+                        }
+                        Err(err) => {
+                            let _ = response.send(Err(err));
+                            continue;
+                        }
+                    }
                 };
 
                 let rendering_context =
@@ -94,7 +101,7 @@ pub(super) fn drain_commands(
                         target_fps,
                         unsafe_no_consumer_fence,
                         unsafe_no_producer_fence,
-                        refresh_scheduler: refresh_scheduler_for_view,
+                        refresh_scheduler: view_scheduler,
                     }) {
                         Ok(ctx) => Rc::new(ctx),
                         Err(err) => {
@@ -110,18 +117,31 @@ pub(super) fn drain_commands(
                     .build();
                 servo_webview.show();
 
-                let id = free_view_ids.pop().unwrap_or_else(|| {
-                    let id = *next_view_id;
-                    *next_view_id = (*next_view_id).checked_add(1).expect("view id exhausted");
-                    id
-                });
-                let token = {
-                    let token = *next_view_token;
-                    *next_view_token = (*next_view_token)
-                        .checked_add(1)
-                        .expect("view token exhausted");
-                    token
+                let id = match free_view_ids.pop() {
+                    Some(id) => id,
+                    None => {
+                        let id = *next_view_id;
+                        let Some(next_id) = (*next_view_id).checked_add(1) else {
+                            let _ = response.send(Err("View id exhausted".to_string()));
+                            continue;
+                        };
+                        *next_view_id = next_id;
+                        id
+                    }
                 };
+
+                if id == 0 {
+                    let _ = response.send(Err("Invalid view id".to_string()));
+                    continue;
+                }
+
+                let token = *next_view_token;
+                let Some(next_token) = (*next_view_token).checked_add(1) else {
+                    free_view_ids.push(id);
+                    let _ = response.send(Err("View token exhausted".to_string()));
+                    continue;
+                };
+                *next_view_token = next_token;
 
                 let index = id as usize;
                 if index >= views.len() {
