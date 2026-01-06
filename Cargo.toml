@@ -23,3 +23,6 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = "symbols"
+
+[profile.native]
+inherits = "release"

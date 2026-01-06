@@ -1,0 +1,8 @@
+[alias]
+build-native = [
+    "build",
+    "--profile",
+    "native",
+    "--config",
+    "build.rustflags=['-C', 'target-cpu=native']",
+]
