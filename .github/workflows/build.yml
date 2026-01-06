@@ -4,7 +4,7 @@ on:
   push:
   pull_request:
   schedule:
-    - cron: "45 5 * * *"
+    - cron: "0 16 * * *"
 
 permissions:
   contents: read
@@ -53,7 +53,7 @@ jobs:
           cargo check
 
   prepare-release:
-    name: Prepare release
+    name: Prepare Release
     if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
     permissions:
@@ -139,6 +139,6 @@ jobs:
             exit 1
           fi
           SRC_FILE="${MATCHES[0]}"
-          NEW_NAME="xian-web-engine-${{ matrix.target_os }}.${{ matrix.ext }}"
+          NEW_NAME="${{ matrix.target_os }}.${{ matrix.ext }}"
 
           gh release upload nightly "$SRC_FILE#$NEW_NAME" --clobber
