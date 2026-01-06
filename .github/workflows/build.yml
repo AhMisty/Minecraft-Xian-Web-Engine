@@ -38,9 +38,6 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -49,8 +46,7 @@ jobs:
 
       - name: Cargo Check
         run: |
-          cargo update
-          cargo check
+          cargo check --locked
 
   prepare-release:
     name: Prepare Release
@@ -113,9 +109,6 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -124,8 +117,7 @@ jobs:
 
       - name: Build Release
         run: |
-          cargo update
-          cargo build --release
+          cargo build --release --locked
 
       - name: Rename and Upload to Release
         shell: bash
