@@ -6,3 +6,9 @@ build-native = [
     "--config",
     "build.rustflags=['-C', 'target-cpu=native']",
 ]
+
+[target.'cfg(all(windows, target_env = "msvc"))']
+linker = "rust-lld"
+
+[target.'cfg(any(target_os = "linux", all(windows, target_env = "gnu")))']
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]

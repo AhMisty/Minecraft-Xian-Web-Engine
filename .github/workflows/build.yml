@@ -4,41 +4,112 @@ on:
   push:
   pull_request:
   schedule:
-    - cron: "0 16 * * *"
+    - cron: "55 4 * * *"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  prepare-release:
-    name: Prepare release
-    runs-on: ubuntu-latest
+  check:
+    name: Check on ${{ matrix.os }}
+    if: github.event_name != 'schedule'
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      actions: write
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+          - os: windows-latest
+          - os: macos-latest
     steps:
       - name: Checkout
-        # if: github.event_name == 'schedule'
         uses: actions/checkout@v6
 
-      - name: Reset Nightly Release
-        # if: github.event_name == 'schedule'
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libfontconfig1-dev pkg-config lld
+
+      - name: Cargo Check
+        run: cargo check
+
+  prepare-release:
+    name: Prepare release
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      archive_tag: ${{ steps.meta.outputs.archive_tag }}
+    steps:
+      - name: Compute release metadata
+        id: meta
+        shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TZ: "Asia/Shanghai"
         run: |
           DATE=$(date +'%Y%m%d')
-          COMMIT_SHORT=$(echo ${{ github.sha }} | cut -c 1-7)
+          COMMIT_SHORT="${GITHUB_SHA::7}"
+          ARCHIVE_TAG="nightly-$DATE-$COMMIT_SHORT"
 
-          gh release delete nightly --cleanup-tag --yes || true
+          echo "date=$DATE" >> "$GITHUB_OUTPUT"
+          echo "commit_short=$COMMIT_SHORT" >> "$GITHUB_OUTPUT"
+          echo "archive_tag=$ARCHIVE_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Reset Nightly Release and Create Archive Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DATE="${{ steps.meta.outputs.date }}"
+          COMMIT_SHORT="${{ steps.meta.outputs.commit_short }}"
+          ARCHIVE_TAG="${{ steps.meta.outputs.archive_tag }}"
+
+          gh release delete nightly --cleanup-tag --yes --repo "${{ github.repository }}" || true
 
           gh release create nightly \
             --title "Nightly Build ($DATE)" \
             --notes "Auto-built from commit $COMMIT_SHORT." \
             --prerelease \
-            --target ${{ github.sha }}
+            --target ${{ github.sha }} \
+            --repo "${{ github.repository }}"
+
+          gh release delete "$ARCHIVE_TAG" --cleanup-tag --yes --repo "${{ github.repository }}" || true
+
+          gh release create "$ARCHIVE_TAG" \
+            --title "Nightly Build ($DATE)" \
+            --notes "Auto-built from commit $COMMIT_SHORT." \
+            --prerelease \
+            --target ${{ github.sha }} \
+            --repo "${{ github.repository }}"
 
   build-and-upload:
-    name: ${{ github.event_name == 'schedule' && 'Build Release' || 'Check' }} on ${{ matrix.os }}
+    name: Build Release on ${{ matrix.os }}
+    if: github.event_name == 'schedule'
     needs: prepare-release
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+      actions: write
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
     strategy:
       fail-fast: false
       matrix:
@@ -65,22 +136,32 @@ jobs:
         with:
           enable-cache: true
 
-      # - name: Run Cargo Check
-      #   if: github.event_name != 'schedule'
-      #   run: cargo check --verbose
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libfontconfig1-dev pkg-config lld
 
       - name: Build Release
-        # if: github.event_name == 'schedule'
-        run: cargo build --release --verbose
+        run: cargo build --release
 
       - name: Rename and Upload to Release
-        # if: github.event_name == 'schedule'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARCHIVE_TAG: ${{ needs.prepare-release.outputs.archive_tag }}
         run: |
-          DATE=$(date +'%Y%m%d')
-          SRC_FILE=$(ls target/release/*.${{ matrix.ext }} | head -n 1)
-          NEW_NAME="xian-web-engine-${{ matrix.target_os }}-nightly-${DATE}.${{ matrix.ext }}"
+          shopt -s nullglob
+          MATCHES=(target/release/*xian_web_engine.${{ matrix.ext }})
+          if [[ ${#MATCHES[@]} -ne 1 ]]; then
+            echo "Expected exactly 1 build artifact, found ${#MATCHES[@]}: ${MATCHES[*]}" >&2
+            exit 1
+          fi
+          SRC_FILE="${MATCHES[0]}"
+          NEW_NAME="xian-web-engine-${{ matrix.target_os }}.${{ matrix.ext }}"
 
           gh release upload nightly "$SRC_FILE#$NEW_NAME" --clobber
+          gh release upload "$ARCHIVE_TAG" "$SRC_FILE#$NEW_NAME" --clobber
