@@ -11,14 +11,15 @@ permissions:
 
 jobs:
   prepare-release:
+    name: Prepare release
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        if: github.event_name == 'schedule'
+        # if: github.event_name == 'schedule'
         uses: actions/checkout@v6
 
       - name: Reset Nightly Release
-        if: github.event_name == 'schedule'
+        # if: github.event_name == 'schedule'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TZ: "Asia/Shanghai"
@@ -58,17 +59,24 @@ jobs:
 
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly
 
-      - name: Run Cargo Check
-        if: github.event_name != 'schedule'
-        run: cargo check --verbose
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      # - name: Run Cargo Check
+      #   if: github.event_name != 'schedule'
+      #   run: cargo check --verbose
 
       - name: Build Release
-        if: github.event_name == 'schedule'
+        # if: github.event_name == 'schedule'
         run: cargo build --release --verbose
 
       - name: Rename and Upload to Release
-        if: github.event_name == 'schedule'
+        # if: github.event_name == 'schedule'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
