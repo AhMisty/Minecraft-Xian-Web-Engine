@@ -4,7 +4,7 @@ on:
   push:
   pull_request:
   schedule:
-    - cron: "0 6 * * *"
+    - cron: "45 5 * * *"
 
 permissions:
   contents: read
@@ -48,7 +48,9 @@ jobs:
           sudo apt-get install -y --no-install-recommends libfontconfig1-dev pkg-config lld
 
       - name: Cargo Check
-        run: cargo check
+        run: |
+          cargo update
+          cargo check
 
   prepare-release:
     name: Prepare release
@@ -146,7 +148,9 @@ jobs:
           sudo apt-get install -y --no-install-recommends libfontconfig1-dev pkg-config lld
 
       - name: Build Release
-        run: cargo build --release
+        run: |
+          cargo update
+          cargo build --release
 
       - name: Rename and Upload to Release
         shell: bash
