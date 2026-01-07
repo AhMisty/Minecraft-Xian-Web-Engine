@@ -14,6 +14,24 @@ use std::time::{Duration, Instant};
 use crate::engine::lockfree::{BoundedMpscQueue, MpscQueue};
 
 /// ### English
+/// Runnable task scheduled onto the refresh scheduler thread.
+///
+/// Implementations should be cheap to clone (typically via `Arc`) and must be thread-safe.
+///
+/// ### 中文
+/// 可在 refresh 调度线程执行的任务。
+///
+/// 实现应当易于克隆（通常使用 `Arc`），并且必须线程安全。
+pub(crate) trait SchedulerRunnable: Send + Sync + 'static {
+    /// ### English
+    /// Runs the task on the scheduler thread.
+    ///
+    /// ### 中文
+    /// 在调度线程执行任务。
+    fn run(self: Arc<Self>);
+}
+
+/// ### English
 /// Hot-path ring capacity for the scheduler queue (power-of-two).
 ///
 /// ### 中文
@@ -21,7 +39,75 @@ use crate::engine::lockfree::{BoundedMpscQueue, MpscQueue};
 const SCHEDULER_RING_CAPACITY: usize = 8192;
 
 /// ### English
-/// One scheduled callback stored in the internal priority queue.
+/// Type-erased `Arc<T>` task stored inside the scheduler heap/queues.
+///
+/// This avoids per-tick allocations by keeping the task payload owned by an `Arc`, and stores only
+/// a raw pointer + monomorphized function pointers in the hot path.
+///
+/// ### 中文
+/// 调度器堆/队列中存储的“类型擦除 `Arc<T>`”任务。
+///
+/// 该实现通过让任务载荷由 `Arc` 持有，热路径只保存原始指针与（单态化的）函数指针，从而避免每 tick 分配。
+struct ErasedArcTask {
+    ptr: *const (),
+    run: unsafe fn(*const ()),
+    drop: unsafe fn(*const ()),
+}
+
+unsafe impl Send for ErasedArcTask {}
+unsafe impl Sync for ErasedArcTask {}
+
+impl ErasedArcTask {
+    #[inline]
+    fn from_arc<T>(task: Arc<T>) -> Self
+    where
+        T: SchedulerRunnable,
+    {
+        Self {
+            ptr: Arc::into_raw(task).cast::<()>(),
+            run: run_arc_task::<T>,
+            drop: drop_arc_task::<T>,
+        }
+    }
+
+    #[inline]
+    fn run(self) {
+        let ptr = self.ptr;
+        let run = self.run;
+        std::mem::forget(self);
+        unsafe {
+            run(ptr);
+        }
+    }
+}
+
+impl Drop for ErasedArcTask {
+    fn drop(&mut self) {
+        unsafe {
+            (self.drop)(self.ptr);
+        }
+    }
+}
+
+unsafe fn run_arc_task<T>(ptr: *const ())
+where
+    T: SchedulerRunnable,
+{
+    let task = unsafe { Arc::from_raw(ptr.cast::<T>()) };
+    <T as SchedulerRunnable>::run(task);
+}
+
+unsafe fn drop_arc_task<T>(ptr: *const ())
+where
+    T: SchedulerRunnable,
+{
+    unsafe {
+        drop(Arc::from_raw(ptr.cast::<T>()));
+    }
+}
+
+/// ### English
+/// One scheduled task stored in the internal priority queue.
 ///
 /// `BinaryHeap` is a max-heap, so we reverse the ordering in `Ord` to pop the earliest deadline.
 ///
@@ -31,10 +117,10 @@ const SCHEDULER_RING_CAPACITY: usize = 8192;
 /// `BinaryHeap` 是最大堆，因此在 `Ord` 中反转排序以便弹出最早的 deadline。
 struct ScheduledTask {
     /// ### English
-    /// Target time when the callback should run.
+    /// Target time when the task should run.
     ///
     /// ### 中文
-    /// 回调应执行的目标时间。
+    /// 任务应执行的目标时间。
     deadline: Instant,
     /// ### English
     /// Monotonic sequence used as a tiebreaker in the heap.
@@ -43,11 +129,11 @@ struct ScheduledTask {
     /// 在堆中用作平局判定的单调序号。
     seq: u64,
     /// ### English
-    /// Callback to execute on the scheduler thread.
+    /// Task payload to execute on the scheduler thread.
     ///
     /// ### 中文
-    /// 在调度线程中执行的回调。
-    callback: Box<dyn Fn() + Send + 'static>,
+    /// 在调度线程中执行的任务载荷。
+    task: ErasedArcTask,
 }
 
 impl PartialEq for ScheduledTask {
@@ -236,23 +322,26 @@ impl RefreshScheduler {
     ///
     /// #### Parameters
     /// - `delay`: Delay before running the callback.
-    /// - `callback`: Callback executed on the scheduler thread.
+    /// - `task`: Task executed on the scheduler thread.
     ///
     /// ### 中文
-    /// 计划在 `delay` 之后执行一个回调。
+    /// 计划在 `delay` 之后执行一个任务。
     ///
     /// #### 参数
-    /// - `delay`：回调执行前的延迟时间。
-    /// - `callback`：在调度线程执行的回调。
-    pub fn schedule(&self, delay: Duration, callback: Box<dyn Fn() + Send + 'static>) {
+    /// - `delay`：任务执行前的延迟时间。
+    /// - `task`：在调度线程执行的任务。
+    pub fn schedule<T>(&self, delay: Duration, task: Arc<T>)
+    where
+        T: SchedulerRunnable,
+    {
         let seq = self.next_seq.fetch_add(1, AtomicOrdering::Relaxed);
         let task = ScheduledTask {
             deadline: Instant::now() + delay,
             seq,
-            callback,
+            task: ErasedArcTask::from_arc(task),
         };
         self.queue.push(task);
-        if !self.wake_pending.swap(true, AtomicOrdering::AcqRel) {
+        if !self.wake_pending.swap(true, AtomicOrdering::Release) {
             self.thread.unpark();
         }
     }
@@ -313,7 +402,7 @@ fn run_scheduler(
             let Some(task) = heap.pop() else {
                 break;
             };
-            (task.callback)();
+            task.task.run();
             if shutdown.load(AtomicOrdering::Acquire) {
                 return;
             }
@@ -323,14 +412,16 @@ fn run_scheduler(
             return;
         }
 
-        if wake_pending.swap(false, AtomicOrdering::AcqRel) {
+        if wake_pending.swap(false, AtomicOrdering::Acquire) {
             continue;
         }
 
+        let now = Instant::now();
         let timeout = heap
             .peek()
-            .map(|task| task.deadline.saturating_duration_since(Instant::now()));
+            .map(|task| task.deadline.saturating_duration_since(now));
         match timeout {
+            Some(Duration::ZERO) => continue,
             Some(timeout) => thread::park_timeout(timeout),
             None => thread::park(),
         }

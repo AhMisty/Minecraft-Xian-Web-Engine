@@ -57,7 +57,7 @@ mod view;
 /// - `pending_queue`: Pending view-id queue used to schedule per-view work.
 /// - `command_queue`: Control-command queue from embedder threads.
 /// - `thread_pool_cap`: Servo worker thread cap (`0` means no cap).
-/// - `engine_flags`: Engine flags bitmask (see `XIAN_WEB_ENGINE_ENGINE_FLAG_*`).
+/// - `engine_flags`: Engine flags bitmask (see `XIAN_WEB_ENGINE_FLAG_*`).
 /// - `init`: One-shot used to report initialization success/failure to the spawner.
 ///
 /// ### 中文
@@ -89,7 +89,7 @@ mod view;
 /// - `pending_queue`：用于调度每 view 工作的 pending view-id 队列。
 /// - `command_queue`：来自宿主线程的控制命令队列。
 /// - `thread_pool_cap`：Servo 工作线程上限（`0` 表示不封顶）。
-/// - `engine_flags`：引擎标志位掩码（见 `XIAN_WEB_ENGINE_ENGINE_FLAG_*`）。
+/// - `engine_flags`：引擎标志位掩码（见 `XIAN_WEB_ENGINE_FLAG_*`）。
 /// - `init`：用于向创建方回报初始化成功/失败的一次性通道。
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_servo_thread(
@@ -124,7 +124,7 @@ pub(super) fn run_servo_thread(
         let _ = std::fs::create_dir_all(config_dir);
     }
 
-    let no_park = (engine_flags & flags::XIAN_WEB_ENGINE_ENGINE_FLAG_NO_PARK) != 0;
+    let no_park = (engine_flags & flags::XIAN_WEB_ENGINE_FLAG_NO_PARK) != 0;
     let wake_pending = Arc::new(AtomicBool::new(false));
 
     #[derive(Clone)]

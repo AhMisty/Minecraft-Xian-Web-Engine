@@ -147,10 +147,10 @@ pub struct XianWebEngineFrame {
 /// 所有字符串指针均为可选的 NUL 结尾 UTF-8 C 字符串；NULL 或空字符串表示“不设置”。
 pub struct XianWebEngineConfig {
     /// ### English
-    /// Size of this struct in bytes (must be `sizeof(XianWebEngineConfig)`).
+    /// Size of this struct in bytes (must be at least `sizeof(XianWebEngineConfig)`).
     ///
     /// ### 中文
-    /// 该结构体的字节大小（必须等于 `sizeof(XianWebEngineConfig)`）。
+    /// 该结构体的字节大小（必须不小于 `sizeof(XianWebEngineConfig)`）。
     pub struct_size: u32,
     /// ### English
     /// ABI version expected by the caller (must match `xian_web_engine_abi_version()`).
@@ -193,10 +193,10 @@ pub struct XianWebEngineConfig {
     /// Servo 工作线程上限（`0` 表示不封顶）。
     pub thread_pool_cap: u32,
     /// ### English
-    /// Engine flags bitmask (see `XIAN_WEB_ENGINE_ENGINE_FLAG_*`).
+    /// Engine flags bitmask (see `XIAN_WEB_ENGINE_FLAG_*`).
     ///
     /// ### 中文
-    /// 引擎标志位掩码（见 `XIAN_WEB_ENGINE_ENGINE_FLAG_*`）。
+    /// 引擎标志位掩码（见 `XIAN_WEB_ENGINE_FLAG_*`）。
     pub engine_flags: u32,
     /// ### English
     /// Optional resource directory override (NUL-terminated UTF-8).
@@ -220,10 +220,10 @@ pub struct XianWebEngineConfig {
 /// 通过 C ABI 传递的 view 创建配置。
 pub struct XianWebEngineViewConfig {
     /// ### English
-    /// Size of this struct in bytes (must be `sizeof(XianWebEngineViewConfig)`).
+    /// Size of this struct in bytes (must be at least `sizeof(XianWebEngineViewConfig)`).
     ///
     /// ### 中文
-    /// 该结构体的字节大小（必须等于 `sizeof(XianWebEngineViewConfig)`）。
+    /// 该结构体的字节大小（必须不小于 `sizeof(XianWebEngineViewConfig)`）。
     pub struct_size: u32,
     /// ### English
     /// ABI version expected by the caller (must match `xian_web_engine_abi_version()`).
@@ -268,7 +268,7 @@ pub struct XianWebEngineViewConfig {
 ///
 /// ### 中文
 /// `xian_web_engine` 的 C ABI 版本号。
-const XIAN_WEB_ENGINE_ABI_VERSION: u32 = 3;
+const XIAN_WEB_ENGINE_ABI_VERSION: u32 = 1;
 
 #[repr(C)]
 struct AbiHeader {

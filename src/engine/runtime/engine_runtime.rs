@@ -95,7 +95,7 @@ impl EngineRuntime {
     /// - `resources_dir`: Optional resource directory override.
     /// - `config_dir`: Optional config directory override.
     /// - `thread_pool_cap`: Servo worker thread cap (`0` means no cap).
-    /// - `engine_flags`: Engine flags bitmask (see `XIAN_WEB_ENGINE_ENGINE_FLAG_*`).
+    /// - `engine_flags`: Engine flags bitmask (see `XIAN_WEB_ENGINE_FLAG_*`).
     ///
     /// ### 中文
     /// 创建一个新的引擎运行时，并初始化独立的 Servo 线程。
@@ -113,7 +113,7 @@ impl EngineRuntime {
     /// - `resources_dir`：可选的资源目录覆盖。
     /// - `config_dir`：可选的配置目录覆盖。
     /// - `thread_pool_cap`：Servo 工作线程上限（`0` 表示不封顶）。
-    /// - `engine_flags`：引擎标志位掩码（见 `XIAN_WEB_ENGINE_ENGINE_FLAG_*`）。
+    /// - `engine_flags`：引擎标志位掩码（见 `XIAN_WEB_ENGINE_FLAG_*`）。
     pub fn new(
         glfw_shared_window: *mut c_void,
         glfw_api: EmbedderGlfwApi,
@@ -124,7 +124,7 @@ impl EngineRuntime {
         engine_flags: u32,
     ) -> Result<Self, String> {
         let glfw_shared_window_handle = glfw_shared_window as usize;
-        let should_unpark = (engine_flags & flags::XIAN_WEB_ENGINE_ENGINE_FLAG_NO_PARK) == 0;
+        let should_unpark = (engine_flags & flags::XIAN_WEB_ENGINE_FLAG_NO_PARK) == 0;
 
         let vsync_queue = Arc::new(VsyncCallbackQueue::with_capacity(4096));
         let vsync_queue_thread = vsync_queue.clone();

@@ -6,7 +6,7 @@
 
 use std::rc::Rc;
 use std::sync::{
-    Arc,
+    Arc, Weak,
     atomic::{AtomicBool, Ordering as AtomicOrdering},
 };
 use std::time::Duration;
@@ -15,7 +15,7 @@ use servo::RefreshDriver;
 
 use crate::engine::lockfree::CoalescedBox;
 
-use super::scheduler::RefreshScheduler;
+use super::scheduler::{RefreshScheduler, SchedulerRunnable};
 
 /// ### English
 /// Refresh driver that ticks at a fixed interval (`target_fps != 0` path).
@@ -23,18 +23,6 @@ use super::scheduler::RefreshScheduler;
 /// ### 中文
 /// 固定间隔的 refresh driver（`target_fps != 0` 路径）。
 pub struct FixedIntervalRefreshDriver {
-    /// ### English
-    /// Shared global scheduler (single background thread).
-    ///
-    /// ### 中文
-    /// 共享的全局调度器（单个后台线程）。
-    scheduler: Arc<RefreshScheduler>,
-    /// ### English
-    /// Fixed frame duration used to schedule the next refresh.
-    ///
-    /// ### 中文
-    /// 用于调度下一次 refresh 的固定帧间隔。
-    frame_duration: Duration,
     /// ### English
     /// Coalesced state that keeps only the latest callback and limits scheduling to one tick.
     ///
@@ -59,9 +47,7 @@ impl FixedIntervalRefreshDriver {
     /// - `frame_duration`：tick 的固定时间间隔。
     pub fn new(scheduler: Arc<RefreshScheduler>, frame_duration: Duration) -> Rc<Self> {
         Rc::new(Self {
-            scheduler,
-            frame_duration,
-            coalesced: Arc::new(FixedIntervalCoalesced::new()),
+            coalesced: Arc::new(FixedIntervalCoalesced::new(scheduler, frame_duration)),
         })
     }
 }
@@ -80,11 +66,7 @@ impl RefreshDriver for FixedIntervalRefreshDriver {
     /// #### 参数
     /// - `start_frame_callback`：下一次 tick 执行的回调（latest-wins）。
     fn observe_next_frame(&self, start_frame_callback: Box<dyn Fn() + Send + 'static>) {
-        self.coalesced.submit(
-            self.scheduler.clone(),
-            self.frame_duration,
-            start_frame_callback,
-        );
+        self.coalesced.submit(start_frame_callback);
     }
 }
 
@@ -132,6 +114,19 @@ struct FixedIntervalCoalesced {
     /// ### 中文
     /// 是否已经安排了一个 tick。
     scheduled: AtomicBool,
+    /// ### English
+    /// Scheduler handle stored as a weak ref to avoid `scheduler -> task -> state -> scheduler`
+    /// cycles while tasks are pending in the scheduler.
+    ///
+    /// ### 中文
+    /// 调度器句柄（弱引用）：用于避免任务挂起时形成 `scheduler -> task -> state -> scheduler` 的强引用环。
+    scheduler: Weak<RefreshScheduler>,
+    /// ### English
+    /// Fixed delay between ticks.
+    ///
+    /// ### 中文
+    /// tick 之间的固定延迟。
+    delay: Duration,
 }
 
 impl FixedIntervalCoalesced {
@@ -141,10 +136,12 @@ impl FixedIntervalCoalesced {
     /// ### 中文
     /// 创建一个空的合并器。
     #[inline]
-    fn new() -> Self {
+    fn new(scheduler: Arc<RefreshScheduler>, delay: Duration) -> Self {
         Self {
             callback: CoalescedBox::default(),
             scheduled: AtomicBool::new(false),
+            scheduler: Arc::downgrade(&scheduler),
+            delay,
         }
     }
 
@@ -206,33 +203,41 @@ impl FixedIntervalCoalesced {
     /// Submits a callback and schedules a tick if none is currently scheduled.
     ///
     /// #### Parameters
-    /// - `scheduler`: Scheduler used to run the tick.
-    /// - `delay`: Fixed delay between ticks.
     /// - `callback`: Callback to coalesce (latest wins).
     ///
     /// ### 中文
     /// 提交一个回调；若当前没有已安排的 tick，则安排一次 tick。
     ///
     /// #### 参数
-    /// - `scheduler`：用于执行 tick 的调度器。
-    /// - `delay`：tick 的固定延迟间隔。
     /// - `callback`：要合并的回调（latest-wins）。
     #[inline]
-    fn submit(
-        self: &Arc<Self>,
-        scheduler: Arc<RefreshScheduler>,
-        delay: Duration,
-        callback: Box<dyn Fn() + Send + 'static>,
-    ) {
+    fn submit(self: &Arc<Self>, callback: Box<dyn Fn() + Send + 'static>) {
         self.set_callback(callback);
-        if !self.scheduled.swap(true, AtomicOrdering::AcqRel) {
-            let state = self.clone();
-            let scheduler_for_tick = scheduler.clone();
-            scheduler.schedule(
-                delay,
-                Box::new(move || state.clone().tick(scheduler_for_tick.clone(), delay)),
-            );
+        if self.scheduled.swap(true, AtomicOrdering::AcqRel) {
+            return;
         }
+
+        let Some(scheduler) = self.scheduler.upgrade() else {
+            self.clear_pending();
+            return;
+        };
+
+        scheduler.schedule(self.delay, self.clone());
+    }
+
+    /// ### English
+    /// Drops any pending callback and clears the scheduling state.
+    ///
+    /// This is used when the backing scheduler has been dropped, so ticks can no longer run.
+    ///
+    /// ### 中文
+    /// 丢弃所有待处理回调并清除调度状态。
+    ///
+    /// 当底层 scheduler 已被 drop（无法再执行 tick）时使用。
+    #[inline]
+    fn clear_pending(&self) {
+        self.scheduled.store(false, AtomicOrdering::Release);
+        let _ = self.take_callback();
     }
 
     /// ### English
@@ -242,19 +247,15 @@ impl FixedIntervalCoalesced {
     /// The `scheduled` flag is cleared before running the callback so `observe_next_frame()` can
     /// schedule the next tick from within the callback without extra coordination.
     ///
-    /// #### Parameters
-    /// - `scheduler`: Scheduler used to run the next tick if re-armed.
-    /// - `delay`: Fixed delay between ticks.
+    /// Threading: this method runs on the `RefreshScheduler` worker thread.
     ///
     /// ### 中文
     /// 执行合并后的回调；若回调执行期间又有新回调提交，则会重新 arm 调度。
     ///
     /// 在执行回调之前清除 `scheduled` 标记，使回调内部的 `observe_next_frame()` 可直接安排下一次 tick。
     ///
-    /// #### 参数
-    /// - `scheduler`：用于在需要时继续安排 tick 的调度器。
-    /// - `delay`：tick 的固定延迟间隔。
-    fn tick(self: Arc<Self>, scheduler: Arc<RefreshScheduler>, delay: Duration) {
+    /// 线程：该方法在 `RefreshScheduler` 工作线程中执行。
+    fn tick(self: Arc<Self>) {
         let callback = self.take_callback();
 
         self.scheduled.store(false, AtomicOrdering::Release);
@@ -263,13 +264,22 @@ impl FixedIntervalCoalesced {
             callback();
         }
 
-        if self.callback.is_pending() && !self.scheduled.swap(true, AtomicOrdering::AcqRel) {
-            let state = self.clone();
-            let scheduler_for_tick = scheduler.clone();
-            scheduler.schedule(
-                delay,
-                Box::new(move || state.clone().tick(scheduler_for_tick.clone(), delay)),
-            );
+        if !self.callback.is_pending() {
+            return;
         }
+        if self.scheduled.swap(true, AtomicOrdering::AcqRel) {
+            return;
+        }
+        let Some(scheduler) = self.scheduler.upgrade() else {
+            self.clear_pending();
+            return;
+        };
+        scheduler.schedule(self.delay, self.clone());
+    }
+}
+
+impl SchedulerRunnable for FixedIntervalCoalesced {
+    fn run(self: Arc<Self>) {
+        self.tick();
     }
 }

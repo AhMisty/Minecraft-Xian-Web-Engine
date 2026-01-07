@@ -17,7 +17,7 @@
 /// 引擎模式：独立 Servo 线程在 idle 时不再 park/unpark（busy-spin）。
 ///
 /// 该模式可减少唤醒 syscalls 的开销、降低延迟，但会显著增加空闲时的 CPU 占用。
-pub const XIAN_WEB_ENGINE_ENGINE_FLAG_NO_PARK: u32 = 1 << 0;
+pub const XIAN_WEB_ENGINE_FLAG_NO_PARK: u32 = 1 << 0;
 
 /// ### English
 /// Unsafe mode: skip Java-side consumer fences (fastest but may overwrite textures still in use).
