@@ -15,7 +15,7 @@ rustls = { version = "0.23", default-features = false, features = [
 ] }
 
 [lib]
-name = "xian_web_engine"
+name = "web_engine"
 crate-type = ["cdylib"]
 
 [profile.release]
@@ -26,3 +26,7 @@ strip = "symbols"
 
 [profile.native]
 inherits = "release"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

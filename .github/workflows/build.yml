@@ -84,7 +84,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           shopt -s nullglob
-          MATCHES=(target/release/*xian_web_engine.${{ matrix.ext }})
+          MATCHES=(target/release/*web_engine.${{ matrix.ext }})
           if [[ ${#MATCHES[@]} -ne 1 ]]; then
             echo "Expected exactly 1 build artifact, found ${#MATCHES[@]}: ${MATCHES[*]}" >&2
             exit 1
