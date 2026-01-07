@@ -1,56 +1,16 @@
 name: Build and Release Nightly
 
 on:
-  push:
-  pull_request:
   schedule:
     - cron: "0 16 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  check:
-    name: Check on ${{ matrix.os }}
-    if: github.event_name != 'schedule'
-    runs-on: ${{ matrix.os }}
-    permissions:
-      contents: read
-      actions: write
-    env:
-      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-          - os: windows-latest
-          - os: macos-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libfontconfig1-dev pkg-config lld
-
-      - name: Cargo Check
-        run: |
-          cargo check --locked
-
   prepare-release:
     name: Prepare Release
-    if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -68,14 +28,13 @@ jobs:
 
           gh release create nightly \
             --title "Nightly Build ($DATE)" \
-            --notes "Auto-built from commit $COMMIT_SHORT." \
+            --notes "Auto-built from commit $COMMIT_SHORT at $(date +'%Y-%m-%d %H:%M:%S')" \
             --prerelease \
             --target ${{ github.sha }} \
             --repo "${{ github.repository }}"
 
   build-and-upload:
     name: Build Release on ${{ matrix.os }}
-    if: github.event_name == 'schedule'
     needs: prepare-release
     runs-on: ${{ matrix.os }}
     permissions:
