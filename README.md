@@ -83,6 +83,7 @@ xian_web_engine_views_release_frames(release_views, release_slots, release_fence
   - 若 fence 为 0，槽位会立即可复用；宿主必须确保 GPU 已不再使用该纹理。
 
 性能/安全权衡 flags：
+
 - `XIAN_WEB_ENGINE_VIEW_FLAG_UNSAFE_NO_CONSUMER_FENCE`：忽略 consumer fence（最快，但你必须自行保证不覆盖仍在采样的纹理；且必须传 `consumer_fences = NULL` 或 fence=0，避免 GLsync 泄漏）。
 - `XIAN_WEB_ENGINE_VIEW_FLAG_UNSAFE_NO_PRODUCER_FENCE`：不提供 producer fence（更低开销；你必须自行保证不会采样到未完成帧）。
 
