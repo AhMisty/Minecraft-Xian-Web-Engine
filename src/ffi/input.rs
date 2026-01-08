@@ -3,6 +3,7 @@
 //!
 //! ### 中文
 //! 向 view 发送输入事件的 C ABI 绑定。
+use std::ptr;
 
 use crate::engine::{
     XIAN_WEB_ENGINE_INPUT_KIND_KEY, XIAN_WEB_ENGINE_INPUT_KIND_MOUSE_BUTTON,
@@ -28,6 +29,7 @@ use super::XianWebEngineView;
 /// #### Safety
 /// - `view` must be a valid pointer returned by `xian_web_engine_view_create`.
 /// - If `count != 0`, `events` must be valid for reads of `count` `XianWebEngineInputEvent` values.
+/// - `events` may be unaligned; this function handles unaligned loads.
 ///
 /// ### 中文
 /// 向 view 发送一批输入事件。
@@ -44,6 +46,7 @@ use super::XianWebEngineView;
 /// #### 安全
 /// - `view` 必须是由 `xian_web_engine_view_create` 返回的有效指针。
 /// - 若 `count != 0`，则 `events` 必须至少可读 `count` 个 `XianWebEngineInputEvent` 元素。
+/// - `events` 允许非对齐；本函数会使用非对齐读取进行兼容处理。
 pub unsafe extern "C" fn xian_web_engine_view_send_input_events(
     view: *mut XianWebEngineView,
     events: *const XianWebEngineInputEvent,
@@ -67,48 +70,79 @@ pub unsafe extern "C" fn xian_web_engine_view_send_input_events(
     let mut input_pending = false;
 
     let count = count as usize;
-    let event_slice = unsafe { std::slice::from_raw_parts(events, count) };
     let mut index: usize = 0;
-    while index < count {
-        let event = &event_slice[index];
-        match event.kind {
-            XIAN_WEB_ENGINE_INPUT_KIND_MOUSE_MOVE => {
-                has_mouse_move = true;
-                last_mouse_move_x = event.x;
-                last_mouse_move_y = event.y;
-                accepted += 1;
-                index += 1;
+    if super::is_aligned_ptr(events) {
+        let event_slice = unsafe { std::slice::from_raw_parts(events, count) };
+        while index < count {
+            let event = &event_slice[index];
+            match event.kind {
+                XIAN_WEB_ENGINE_INPUT_KIND_MOUSE_MOVE => {
+                    has_mouse_move = true;
+                    last_mouse_move_x = event.x;
+                    last_mouse_move_y = event.y;
+                    accepted += 1;
+                    index += 1;
+                }
+                XIAN_WEB_ENGINE_INPUT_KIND_MOUSE_BUTTON
+                | XIAN_WEB_ENGINE_INPUT_KIND_WHEEL
+                | XIAN_WEB_ENGINE_INPUT_KIND_KEY => {
+                    let start = index;
+                    index += 1;
+                    while index < count {
+                        let kind = event_slice[index].kind;
+                        if kind == XIAN_WEB_ENGINE_INPUT_KIND_MOUSE_BUTTON
+                            || kind == XIAN_WEB_ENGINE_INPUT_KIND_WHEEL
+                            || kind == XIAN_WEB_ENGINE_INPUT_KIND_KEY
+                        {
+                            index += 1;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    let segment = &event_slice[start..index];
+                    let pushed = handle.push_input_events(segment);
+                    accepted += pushed as u32;
+                    if pushed > 0 {
+                        input_pending = true;
+                    }
+                    if pushed < segment.len() {
+                        break;
+                    }
+                }
+                _ => {
+                    accepted += 1;
+                    index += 1;
+                }
             }
-            XIAN_WEB_ENGINE_INPUT_KIND_MOUSE_BUTTON
-            | XIAN_WEB_ENGINE_INPUT_KIND_WHEEL
-            | XIAN_WEB_ENGINE_INPUT_KIND_KEY => {
-                let start = index;
-                index += 1;
-                while index < count {
-                    let kind = event_slice[index].kind;
-                    if kind == XIAN_WEB_ENGINE_INPUT_KIND_MOUSE_BUTTON
-                        || kind == XIAN_WEB_ENGINE_INPUT_KIND_WHEEL
-                        || kind == XIAN_WEB_ENGINE_INPUT_KIND_KEY
-                    {
+        }
+    } else {
+        while index < count {
+            let event = unsafe { ptr::read_unaligned(events.add(index)) };
+            match event.kind {
+                XIAN_WEB_ENGINE_INPUT_KIND_MOUSE_MOVE => {
+                    has_mouse_move = true;
+                    last_mouse_move_x = event.x;
+                    last_mouse_move_y = event.y;
+                    accepted += 1;
+                    index += 1;
+                }
+                XIAN_WEB_ENGINE_INPUT_KIND_MOUSE_BUTTON
+                | XIAN_WEB_ENGINE_INPUT_KIND_WHEEL
+                | XIAN_WEB_ENGINE_INPUT_KIND_KEY => {
+                    let pushed = handle.push_input_events(std::slice::from_ref(&event));
+                    accepted += pushed as u32;
+                    if pushed > 0 {
+                        input_pending = true;
                         index += 1;
                     } else {
                         break;
                     }
                 }
-
-                let segment = &event_slice[start..index];
-                let pushed = handle.push_input_events(segment);
-                accepted += pushed as u32;
-                if pushed > 0 {
-                    input_pending = true;
+                _ => {
+                    accepted += 1;
+                    index += 1;
                 }
-                if pushed < segment.len() {
-                    break;
-                }
-            }
-            _ => {
-                accepted += 1;
-                index += 1;
             }
         }
     }

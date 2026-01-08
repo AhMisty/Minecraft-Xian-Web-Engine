@@ -254,6 +254,24 @@ impl From<AcquiredFrame> for XianWebEngineFrame {
 
 #[inline]
 /// ### English
+/// Returns `true` if `ptr` is aligned for `T`.
+///
+/// #### Parameters
+/// - `ptr`: Raw pointer to check.
+///
+/// ### 中文
+/// 判断 `ptr` 是否满足 `T` 的对齐要求。
+///
+/// #### 参数
+/// - `ptr`：需要检查对齐的原始指针。
+fn is_aligned_ptr<T>(ptr: *const T) -> bool {
+    let align = std::mem::align_of::<T>();
+    debug_assert!(align.is_power_of_two());
+    (ptr as usize) & (align - 1) == 0
+}
+
+#[inline]
+/// ### English
 /// Converts an optional NUL-terminated UTF-8 C string into `&str`.
 ///
 /// Returns `None` for NULL pointers or invalid UTF-8.

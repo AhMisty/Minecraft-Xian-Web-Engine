@@ -4,7 +4,54 @@
 //! ### 中文
 //! 帧获取与释放相关的 C ABI 绑定。
 
+use std::ptr;
+
 use super::{XianWebEngineFrame, XianWebEngineView};
+
+#[unsafe(no_mangle)]
+/// ### English
+/// Tries to acquire the latest READY frame for one view.
+///
+/// If a frame is acquired, writes it to `out_frame` and returns `true`.
+///
+/// #### Parameters
+/// - `view`: View pointer returned by `xian_web_engine_view_create` (must not be NULL).
+/// - `out_frame`: Output pointer receiving one acquired frame (must not be NULL).
+///
+/// #### Safety
+/// - `view` must be a valid pointer returned by `xian_web_engine_view_create`.
+/// - `out_frame` must be valid for writes of `sizeof(XianWebEngineFrame)` bytes.
+///
+/// ### 中文
+/// 尝试获取单个 view 的最新 READY 帧。
+///
+/// 若成功 acquire，则写入 `out_frame` 并返回 `true`。
+///
+/// #### 参数
+/// - `view`：由 `xian_web_engine_view_create` 返回的 view 指针（必须非 NULL）。
+/// - `out_frame`：输出指针，用于接收一个 acquired frame（必须非 NULL）。
+///
+/// #### 安全
+/// - `view` 必须是由 `xian_web_engine_view_create` 返回的有效指针。
+/// - `out_frame` 必须至少可写 `sizeof(XianWebEngineFrame)` 字节。
+pub unsafe extern "C" fn xian_web_engine_view_acquire_frame(
+    view: *mut XianWebEngineView,
+    out_frame: *mut XianWebEngineFrame,
+) -> bool {
+    if view.is_null() || out_frame.is_null() {
+        return false;
+    }
+
+    let handle = unsafe { &(*view).handle };
+    let Some(frame) = handle.acquire_frame() else {
+        return false;
+    };
+
+    unsafe {
+        ptr::write_unaligned(out_frame, frame.into());
+    }
+    true
+}
 
 #[unsafe(no_mangle)]
 /// ### English
@@ -31,6 +78,7 @@ use super::{XianWebEngineFrame, XianWebEngineView};
 /// #### Safety
 /// - If `count != 0`, `views` must be valid for reads of `count` pointers.
 /// - `out_view_indices` and `out_frames` must be valid for writes of at least `count` elements.
+/// - Pointers may be unaligned; this function handles unaligned loads/stores.
 ///
 /// ### 中文
 /// 批量尝试获取多个 view 的最新 READY 帧。
@@ -56,6 +104,7 @@ use super::{XianWebEngineFrame, XianWebEngineView};
 /// #### 安全
 /// - 若 `count != 0`，则 `views` 必须至少可读 `count` 个指针。
 /// - `out_view_indices` 与 `out_frames` 必须至少可写 `count` 个元素。
+/// - 指针允许非对齐；本函数会使用非对齐读写进行兼容处理。
 pub unsafe extern "C" fn xian_web_engine_views_acquire_frames(
     views: *const *mut XianWebEngineView,
     out_view_indices: *mut u32,
@@ -67,25 +116,93 @@ pub unsafe extern "C" fn xian_web_engine_views_acquire_frames(
     }
 
     let count = count as usize;
-    let view_ptrs = unsafe { std::slice::from_raw_parts(views, count) };
-    let indices_out = unsafe { std::slice::from_raw_parts_mut(out_view_indices, count) };
-    let frames_out = unsafe { std::slice::from_raw_parts_mut(out_frames, count) };
-
     let mut acquired = 0usize;
-    for (i, &view_ptr) in view_ptrs.iter().enumerate() {
-        if view_ptr.is_null() {
-            continue;
-        }
+    if super::is_aligned_ptr(views)
+        && super::is_aligned_ptr(out_view_indices)
+        && super::is_aligned_ptr(out_frames)
+    {
+        let view_ptrs = unsafe { std::slice::from_raw_parts(views, count) };
+        let indices_out = unsafe { std::slice::from_raw_parts_mut(out_view_indices, count) };
+        let frames_out = unsafe { std::slice::from_raw_parts_mut(out_frames, count) };
 
-        let view_handle = unsafe { &(*view_ptr).handle };
-        if let Some(frame) = view_handle.acquire_frame() {
-            indices_out[acquired] = i as u32;
-            frames_out[acquired] = frame.into();
-            acquired += 1;
+        for (i, &view_ptr) in view_ptrs.iter().enumerate() {
+            if view_ptr.is_null() {
+                continue;
+            }
+
+            let view_handle = unsafe { &(*view_ptr).handle };
+            if let Some(frame) = view_handle.acquire_frame() {
+                indices_out[acquired] = i as u32;
+                frames_out[acquired] = frame.into();
+                acquired += 1;
+            }
+        }
+    } else {
+        for i in 0..count {
+            let view_ptr = unsafe { ptr::read_unaligned(views.add(i)) };
+            if view_ptr.is_null() {
+                continue;
+            }
+
+            let view_handle = unsafe { &(*view_ptr).handle };
+            if let Some(frame) = view_handle.acquire_frame() {
+                unsafe {
+                    ptr::write_unaligned(out_view_indices.add(acquired), i as u32);
+                    ptr::write_unaligned(out_frames.add(acquired), frame.into());
+                }
+                acquired += 1;
+            }
         }
     }
 
     acquired as u32
+}
+
+#[unsafe(no_mangle)]
+/// ### English
+/// Releases one previously acquired frame slot for one view.
+///
+/// If `consumer_fence` is `0`, the slot becomes immediately reusable; the embedder must ensure the
+/// texture is no longer in use by the GPU before releasing (e.g., via other synchronization).
+///
+/// If the view was created with `XIAN_WEB_ENGINE_VIEW_FLAG_UNSAFE_NO_CONSUMER_FENCE`, the fence value
+/// is ignored (treated as `0`).
+///
+/// #### Parameters
+/// - `view`: View pointer returned by `xian_web_engine_view_create` (may be NULL).
+/// - `slot`: Slot index returned by acquire (see `XianWebEngineFrame.slot`).
+/// - `consumer_fence`: Optional consumer fence (`GLsync` cast to `u64`), or 0 to skip.
+///
+/// #### Safety
+/// If non-NULL, `view` must be a valid pointer returned by `xian_web_engine_view_create`.
+///
+/// ### 中文
+/// 释放单个 view 之前 acquire 的帧槽位。
+///
+/// 若 `consumer_fence` 为 `0`，则该槽位会被立即复用；宿主必须确保 GPU 已完成对该纹理的采样后再 release
+///（例如使用其它同步机制）。
+///
+/// 若 view 创建时指定了 `XIAN_WEB_ENGINE_VIEW_FLAG_UNSAFE_NO_CONSUMER_FENCE`，则 fence 会被忽略（视为 0）。
+///
+/// #### 参数
+/// - `view`：由 `xian_web_engine_view_create` 返回的 view 指针（允许为 NULL）。
+/// - `slot`：acquire 返回的槽位索引（见 `XianWebEngineFrame.slot`）。
+/// - `consumer_fence`：可选 consumer fence（`GLsync` 转为 `u64`），为 0 则跳过。
+///
+/// #### 安全
+/// 若 `view` 非 NULL，则它必须是由 `xian_web_engine_view_create` 返回的有效指针。
+pub unsafe extern "C" fn xian_web_engine_view_release_frame(
+    view: *mut XianWebEngineView,
+    slot: u32,
+    consumer_fence: u64,
+) {
+    if view.is_null() {
+        return;
+    }
+
+    unsafe {
+        (*view).handle.release_slot_with_fence(slot, consumer_fence);
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -112,6 +229,7 @@ pub unsafe extern "C" fn xian_web_engine_views_acquire_frames(
 /// #### Safety
 /// - If `count != 0`, `views` and `slots` must be valid for reads of `count` elements.
 /// - If `consumer_fences` is non-NULL, it must be valid for reads of `count` elements.
+/// - Pointers may be unaligned; this function handles unaligned loads.
 ///
 /// ### 中文
 /// 批量释放多个 view 之前 acquire 的帧槽位。
@@ -135,6 +253,7 @@ pub unsafe extern "C" fn xian_web_engine_views_acquire_frames(
 /// #### 安全
 /// - 若 `count != 0`，则 `views` 与 `slots` 必须至少可读 `count` 个元素。
 /// - 若 `consumer_fences` 非 NULL，则它必须至少可读 `count` 个元素。
+/// - 指针允许非对齐；本函数会使用非对齐读写进行兼容处理。
 pub unsafe extern "C" fn xian_web_engine_views_release_frames(
     views: *const *mut XianWebEngineView,
     slots: *const u32,
@@ -146,31 +265,51 @@ pub unsafe extern "C" fn xian_web_engine_views_release_frames(
     }
 
     let count = count as usize;
-    let view_ptrs = unsafe { std::slice::from_raw_parts(views, count) };
-    let slot_values = unsafe { std::slice::from_raw_parts(slots, count) };
+    if super::is_aligned_ptr(views)
+        && super::is_aligned_ptr(slots)
+        && (consumer_fences.is_null() || super::is_aligned_ptr(consumer_fences))
+    {
+        let view_ptrs = unsafe { std::slice::from_raw_parts(views, count) };
+        let slot_values = unsafe { std::slice::from_raw_parts(slots, count) };
 
-    if consumer_fences.is_null() {
+        if consumer_fences.is_null() {
+            for i in 0..count {
+                let view = view_ptrs[i];
+                if view.is_null() {
+                    continue;
+                }
+                unsafe { (*view).handle.release_slot_with_fence(slot_values[i], 0) };
+            }
+            return;
+        }
+
+        let consumer_fence_values = unsafe { std::slice::from_raw_parts(consumer_fences, count) };
         for i in 0..count {
             let view = view_ptrs[i];
             if view.is_null() {
                 continue;
             }
-            unsafe { (*view).handle.release_slot_with_fence(slot_values[i], 0) };
+            unsafe {
+                (*view)
+                    .handle
+                    .release_slot_with_fence(slot_values[i], consumer_fence_values[i])
+            };
         }
         return;
     }
 
-    let consumer_fence_values = unsafe { std::slice::from_raw_parts(consumer_fences, count) };
     for i in 0..count {
-        let view = view_ptrs[i];
+        let view = unsafe { ptr::read_unaligned(views.add(i)) };
         if view.is_null() {
             continue;
         }
 
-        unsafe {
-            (*view)
-                .handle
-                .release_slot_with_fence(slot_values[i], consumer_fence_values[i])
+        let slot = unsafe { ptr::read_unaligned(slots.add(i)) };
+        let fence = if consumer_fences.is_null() {
+            0
+        } else {
+            unsafe { ptr::read_unaligned(consumer_fences.add(i)) }
         };
+        unsafe { (*view).handle.release_slot_with_fence(slot, fence) };
     }
 }

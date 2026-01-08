@@ -17,9 +17,11 @@
    - 外部 vsync：`target_fps == 0`，每个 vsync/每帧调用一次 `xian_web_engine_tick(engine)`（必须单线程）。
    - 固定间隔：`target_fps != 0`，不需要 `tick`（调用也无害，但通常没必要）。
 5. 每帧：
-   - `xian_web_engine_views_acquire_frames(...)` 获取 `texture_id` + `producer_fence` + `slot`（`slot` 用于后续 release）。
+   - 获取帧：单 view 用 `xian_web_engine_view_acquire_frame(view, &frame)`；多 view 用 `xian_web_engine_views_acquire_frames(...)`（均得到 `texture_id` + `producer_fence` + `slot`，`slot` 用于后续 release）。
    - 若 `producer_fence != 0`，采样前等待（推荐 `glWaitSync`）；宿主不得删除该 fence（Rust 负责删除）。
-   - 采样纹理后可选创建 `consumer_fence`（`glFenceSync`）并用 `xian_web_engine_views_release_frames(...)` 释放；所有权转移给 Rust，宿主不得删除。
+   - 采样纹理后可选创建 `consumer_fence`（`glFenceSync`）并释放：
+     - 单 view：`xian_web_engine_view_release_frame(view, frame.slot, consumer_fence)`（不提供则传 0）
+     - 多 view：`xian_web_engine_views_release_frames(...)`（不提供则 `consumer_fences = NULL`）
 6. 退出：先 `xian_web_engine_view_destroy(view)`，再 `xian_web_engine_destroy(engine)`（destroy 后不要再使用 view 指针）。
 
 ---
@@ -51,6 +53,7 @@
 
 ### 5) `acquire` 输出是“紧凑数组”，`release` 输入是“对齐数组”
 
+- 单 view：`xian_web_engine_view_acquire_frame` 成功时写入一个 `XianWebEngineFrame` 并返回 `true`；释放用 `xian_web_engine_view_release_frame(view, frame.slot, consumer_fence)`（无 fence 传 0）。
 - `xian_web_engine_views_acquire_frames`：只写入成功 acquire 的帧，输出 `out_frames[0..N)` 与 `out_view_indices[0..N)` 紧凑排列。
 - `xian_web_engine_views_release_frames`：要求 `views[i]` / `slots[i]` / `consumer_fences[i]` 一一对应（长度就是你要 release 的数量）。
 
@@ -216,6 +219,15 @@ uint32_t xian_web_engine_view_send_input_events(
   const XianWebEngineInputEvent* events,
   uint32_t count);
 
+bool xian_web_engine_view_acquire_frame(
+  XianWebEngineView* view,
+  XianWebEngineFrame* out_frame);
+
+void xian_web_engine_view_release_frame(
+  XianWebEngineView* view,
+  uint32_t slot,
+  uint64_t consumer_fence);
+
 uint32_t xian_web_engine_views_acquire_frames(
   XianWebEngineView* const* views,
   uint32_t* out_view_indices,
@@ -270,16 +282,10 @@ void example_create_and_loop(void* shared_glfw_window, EmbedderGlfwApi glfw_api)
     // 外部 vsync 模式：每个 vsync 或每帧调用一次（单线程）
     xian_web_engine_tick(engine);
 
-    XianWebEngineView* views[1] = { view };
-    uint32_t indices[1];
-    XianWebEngineFrame frames[1];
-
-    uint32_t acquired = xian_web_engine_views_acquire_frames(views, indices, frames, 1);
-    if (acquired == 0) {
+    XianWebEngineFrame f;
+    if (!xian_web_engine_view_acquire_frame(view, &f)) {
       continue;
     }
-
-    XianWebEngineFrame f = frames[0];
 
     // producer_fence 非 0 时，采样前建议等待（且宿主不得删除）
     // if (f.producer_fence != 0) glWaitSync((GLsync)f.producer_fence, 0, GL_TIMEOUT_IGNORED);
@@ -288,10 +294,10 @@ void example_create_and_loop(void* shared_glfw_window, EmbedderGlfwApi glfw_api)
 
     // 安全释放：宿主在采样 draw 之后创建 consumer fence；所有权转移给 Rust，宿主不得删除
     // uint64_t consumer_fence = (uint64_t)(uintptr_t)glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-    // xian_web_engine_views_release_frames(views, &f.slot, &consumer_fence, 1);
+    // xian_web_engine_view_release_frame(view, f.slot, consumer_fence);
 
     // 不提供 consumer fence：你必须自行保证 GPU 已不再使用该纹理后再 release
-    xian_web_engine_views_release_frames(views, &f.slot, NULL, 1);
+    xian_web_engine_view_release_frame(view, f.slot, 0);
   }
 
   // 建议：先 destroy view，再 destroy engine（destroy engine 后 view 指针不可再用）
