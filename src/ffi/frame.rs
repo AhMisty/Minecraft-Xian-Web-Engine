@@ -19,6 +19,9 @@ use super::{XianWebEngineFrame, XianWebEngineView};
 ///
 /// Returns the number of acquired frames written.
 ///
+/// Each acquired frame includes a `slot` index; the embedder must later release it via
+/// `xian_web_engine_views_release_frames`.
+///
 /// #### Parameters
 /// - `views`: Pointer to an array of `count` view pointers.
 /// - `out_view_indices`: Output array receiving input indices for each acquired frame.
@@ -40,6 +43,9 @@ use super::{XianWebEngineFrame, XianWebEngineView};
 /// - 两个输出数组都必须至少能容纳 `count` 个元素。
 ///
 /// 返回写入的 acquired frame 数量。
+///
+/// 每个 acquired frame 都包含 `slot` 索引；宿主必须在之后通过 `xian_web_engine_views_release_frames`
+/// 释放该槽位。
 ///
 /// #### 参数
 /// - `views`：指向长度为 `count` 的 view 指针数组。

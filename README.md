@@ -10,14 +10,14 @@
 
 ## TL;DR（最小调用顺序）
 
-1. `xian_web_engine_config_init(&cfg)`；填 `cfg.glfw_shared_window` 与 `cfg.glfw_api`（所有函数指针必须非 0）；再 `xian_web_engine_create(&cfg)`。
-2. `xian_web_engine_view_config_init(&vcfg)`；填 `vcfg.engine` 与 `vcfg.width/height/target_fps/view_flags`；再 `xian_web_engine_view_create(&vcfg)`。
+1. `xian_web_engine_config_init(&cfg)`（推荐：填默认值）；填 `cfg.glfw_shared_window` 与 `cfg.glfw_api`（所有函数指针必须非 0）；再 `xian_web_engine_create(&cfg)`。
+2. `xian_web_engine_view_config_init(&vcfg)`（推荐：填默认值）；填 `vcfg.engine` 与 `vcfg.width/height/target_fps/view_flags`；再 `xian_web_engine_view_create(&vcfg)`。
 3. `xian_web_engine_view_set_active(view, 1)`。
 4. 刷新驱动（二选一）：
    - 外部 vsync：`target_fps == 0`，每个 vsync/每帧调用一次 `xian_web_engine_tick(engine)`（必须单线程）。
    - 固定间隔：`target_fps != 0`，不需要 `tick`（调用也无害，但通常没必要）。
 5. 每帧：
-   - `xian_web_engine_views_acquire_frames(...)` 获取 `texture_id` + `producer_fence` + `slot`。
+   - `xian_web_engine_views_acquire_frames(...)` 获取 `texture_id` + `producer_fence` + `slot`（`slot` 用于后续 release）。
    - 若 `producer_fence != 0`，采样前等待（推荐 `glWaitSync`）；宿主不得删除该 fence（Rust 负责删除）。
    - 采样纹理后可选创建 `consumer_fence`（`glFenceSync`）并用 `xian_web_engine_views_release_frames(...)` 释放；所有权转移给 Rust，宿主不得删除。
 6. 退出：先 `xian_web_engine_view_destroy(view)`，再 `xian_web_engine_destroy(engine)`（destroy 后不要再使用 view 指针）。
@@ -26,12 +26,11 @@
 
 ## 关键约定（必须看）
 
-### 1) `struct_size/abi_version` 必须正确
+### 1) 配置结构体不再包含 `struct_size/abi_version`
 
+- `XianWebEngineConfig` / `XianWebEngineViewConfig` 不再包含 ABI 头字段，直接填字段即可。
+- 仍建议先调用 init 填默认值：`xian_web_engine_config_init(&cfg)` / `xian_web_engine_view_config_init(&vcfg)`。
 - `xian_web_engine_create` / `xian_web_engine_view_create` 失败只返回 `NULL`，不提供错误码/错误字符串。
-- 正确做法：永远先调用 init 函数填好头部与默认值：
-  - `xian_web_engine_config_init(&cfg)`
-  - `xian_web_engine_view_config_init(&vcfg)`
 
 ### 2) `EmbedderGlfwApi` 的所有函数指针必须非 0
 
@@ -86,19 +85,26 @@ xian_web_engine_views_release_frames(release_views, release_slots, release_fence
 
 - `XIAN_WEB_ENGINE_VIEW_FLAG_UNSAFE_NO_CONSUMER_FENCE`：忽略 consumer fence（最快，但你必须自行保证不覆盖仍在采样的纹理；且必须传 `consumer_fences = NULL` 或 fence=0，避免 GLsync 泄漏）。
 - `XIAN_WEB_ENGINE_VIEW_FLAG_UNSAFE_NO_PRODUCER_FENCE`：不提供 producer fence（更低开销；你必须自行保证不会采样到未完成帧）。
+- `XIAN_WEB_ENGINE_VIEW_FLAG_INPUT_SINGLE_PRODUCER`：仅在你保证只有一个线程发送输入时开启（启用更快 push 路径）；违反即 UB。
+- `XIAN_WEB_ENGINE_FLAG_NO_PARK`：Servo 线程 idle 时不 park（降低唤醒开销/延迟，但会显著增加 CPU 占用）。
 
 ### 7) 输入：可能“部分接受”，inactive 会“计数=全收但实际丢弃”
 
 - `xian_web_engine_view_send_input_events` 返回“已接受数量”，队列满时会小于 `count`。
 - view inactive：直接返回 `count`（视为已接受）但事件被丢弃（快路径）。
-- `XIAN_WEB_ENGINE_VIEW_FLAG_INPUT_SINGLE_PRODUCER` 仅在你保证只有一个线程发送输入时才能开启；违反即 UB。
+
+### 8) 极致性能配置建议（按优先级）
+
+- 刷新：优先外部 vsync（`target_fps = 0`）并在渲染线程每帧调用一次 `xian_web_engine_tick(engine)`（单线程）。
+- 批处理：多 view 尽量使用 batch acquire/release，并复用预分配数组，避免每帧分配。
+- fences：默认保留 producer/consumer fence；若你能自证同步正确，可开启 `XIAN_WEB_ENGINE_VIEW_FLAG_UNSAFE_NO_*` 进一步降低 GLsync 开销。
+- 输入：尽量批量发送；鼠标移动内部会 latest-wins 合并，仅保留最后一次。
 
 ---
 
 ## ABI 版本与前向兼容
 
-- 当前 ABI 版本：`xian_web_engine_abi_version() == 1`。
-- `struct_size` 兼容策略：只要 `struct_size >= sizeof(Struct)` 即视为兼容（允许宿主传入更大的结构体以做前向扩展）。
+- 获取当前 ABI 版本：`xian_web_engine_abi_version()`。
 
 ---
 
@@ -131,21 +137,17 @@ typedef struct EmbedderGlfwApi {
 } EmbedderGlfwApi;
 
 typedef struct XianWebEngineConfig {
-  uint32_t struct_size;
-  uint32_t abi_version;
   void* glfw_shared_window;
   EmbedderGlfwApi glfw_api;
+  const char* resources_dir;
+  const char* config_dir;
   uint32_t default_width;
   uint32_t default_height;
   uint32_t thread_pool_cap;
   uint32_t engine_flags;
-  const char* resources_dir;
-  const char* config_dir;
 } XianWebEngineConfig;
 
 typedef struct XianWebEngineViewConfig {
-  uint32_t struct_size;
-  uint32_t abi_version;
   XianWebEngine* engine;
   uint32_t width;
   uint32_t height;
@@ -154,9 +156,9 @@ typedef struct XianWebEngineViewConfig {
 } XianWebEngineViewConfig;
 
 typedef struct XianWebEngineFrame {
-  uint32_t slot;
-  uint32_t texture_id;
   uint64_t producer_fence; // GLsync cast to u64 (0 = 无)
+  uint32_t texture_id;
+  uint32_t slot;
   uint32_t width;
   uint32_t height;
 } XianWebEngineFrame;
@@ -238,7 +240,7 @@ void xian_web_engine_views_release_frames(
 // 重点是 ABI 调用顺序与 fence 生命周期。
 void example_create_and_loop(void* shared_glfw_window, EmbedderGlfwApi glfw_api) {
   XianWebEngineConfig cfg;
-  xian_web_engine_config_init(&cfg); // 必须先 init：写入 struct_size/abi_version 与默认值
+  xian_web_engine_config_init(&cfg); // 推荐先 init：写入默认值
   cfg.glfw_shared_window = shared_glfw_window;
   cfg.glfw_api = glfw_api;
   cfg.default_width = 1280;
@@ -250,7 +252,7 @@ void example_create_and_loop(void* shared_glfw_window, EmbedderGlfwApi glfw_api)
   }
 
   XianWebEngineViewConfig vcfg;
-  xian_web_engine_view_config_init(&vcfg); // 必须先 init
+  xian_web_engine_view_config_init(&vcfg); // 推荐先 init
   vcfg.engine = engine;
   vcfg.width = 0;      // 0 表示使用 engine default
   vcfg.height = 0;

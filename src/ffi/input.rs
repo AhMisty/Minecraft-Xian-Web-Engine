@@ -61,17 +61,21 @@ pub unsafe extern "C" fn xian_web_engine_view_send_input_events(
 
     let mut accepted: u32 = 0;
     let mut wake_needed = false;
-    let mut last_mouse_move: Option<(f32, f32)> = None;
+    let mut has_mouse_move = false;
+    let mut last_mouse_move_x: f32 = 0.0;
+    let mut last_mouse_move_y: f32 = 0.0;
     let mut input_pending = false;
 
     let count = count as usize;
     let event_slice = unsafe { std::slice::from_raw_parts(events, count) };
     let mut index: usize = 0;
     while index < count {
-        let ev = event_slice[index];
-        match ev.kind {
+        let event = &event_slice[index];
+        match event.kind {
             XIAN_WEB_ENGINE_INPUT_KIND_MOUSE_MOVE => {
-                last_mouse_move = Some((ev.x, ev.y));
+                has_mouse_move = true;
+                last_mouse_move_x = event.x;
+                last_mouse_move_y = event.y;
                 accepted += 1;
                 index += 1;
             }
@@ -109,8 +113,8 @@ pub unsafe extern "C" fn xian_web_engine_view_send_input_events(
         }
     }
 
-    if let Some((x, y)) = last_mouse_move {
-        wake_needed |= handle.queue_mouse_move(x, y);
+    if has_mouse_move {
+        wake_needed |= handle.queue_mouse_move(last_mouse_move_x, last_mouse_move_y);
     }
 
     if input_pending && handle.notify_input_pending() {

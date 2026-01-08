@@ -24,7 +24,6 @@ use crate::engine::EngineRuntime;
 ///
 /// #### Safety
 /// - `config` must be valid for reads of at least `sizeof(XianWebEngineConfig)` bytes.
-/// - The config header must have a compatible `struct_size` and the correct ABI version.
 ///
 /// ### 中文
 /// 使用配置结构体创建引擎。
@@ -38,13 +37,13 @@ use crate::engine::EngineRuntime;
 ///
 /// #### 安全
 /// - `config` 必须至少可读 `sizeof(XianWebEngineConfig)` 字节。
-/// - 配置头部的 `struct_size` 必须兼容，且 ABI 版本必须匹配。
 pub unsafe extern "C" fn xian_web_engine_create(
     config: *const XianWebEngineConfig,
 ) -> *mut XianWebEngine {
-    let Some(config) = (unsafe { super::read_abi_struct(config) }) else {
+    if config.is_null() {
         return ptr::null_mut();
-    };
+    }
+    let config = unsafe { ptr::read_unaligned(config) };
     if config.glfw_shared_window.is_null() {
         return ptr::null_mut();
     }
@@ -106,6 +105,9 @@ pub unsafe extern "C" fn xian_web_engine_destroy(engine: *mut XianWebEngine) {
 /// ### English
 /// Drains pending vsync callbacks (Java-driven refresh).
 ///
+/// #### Threading
+/// Must be called from a single thread; do not call concurrently.
+///
 /// #### Parameters
 /// - `engine`: Engine pointer returned by `xian_web_engine_create` (may be NULL).
 ///
@@ -114,6 +116,9 @@ pub unsafe extern "C" fn xian_web_engine_destroy(engine: *mut XianWebEngine) {
 ///
 /// ### 中文
 /// 执行待处理的 vsync 回调（由 Java 驱动 refresh）。
+///
+/// #### 线程
+/// 必须由单线程调用；不要并发调用。
 ///
 /// #### 参数
 /// - `engine`：由 `xian_web_engine_create` 返回的引擎指针（允许为 NULL）。

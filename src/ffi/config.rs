@@ -2,14 +2,13 @@
 //! ABI configuration helpers for `xian_web_engine`.
 //!
 //! Provides simple init functions for config structs so embedders can avoid manual zeroing and can
-//! always fill required `struct_size`/`abi_version` fields.
+//! start from consistent defaults.
 //!
 //! ### 中文
 //! `xian_web_engine` 的 ABI 配置辅助方法。
 //!
-//! 提供配置结构体的初始化函数，避免宿主手动清零，并统一填写必需的 `struct_size`/`abi_version` 字段。
+//! 提供配置结构体的初始化函数，避免宿主手动清零，并提供一致的默认值。
 
-use std::mem::size_of;
 use std::ptr;
 
 use super::{XianWebEngineConfig, XianWebEngineViewConfig};
@@ -37,21 +36,20 @@ pub unsafe extern "C" fn xian_web_engine_config_init(config: *mut XianWebEngineC
         return;
     }
 
-    let value = XianWebEngineConfig {
-        struct_size: size_of::<XianWebEngineConfig>() as u32,
-        abi_version: super::XIAN_WEB_ENGINE_ABI_VERSION,
-        glfw_shared_window: ptr::null_mut(),
-        glfw_api: Default::default(),
-        default_width: 1,
-        default_height: 1,
-        thread_pool_cap: 0,
-        engine_flags: 0,
-        resources_dir: ptr::null(),
-        config_dir: ptr::null(),
-    };
-
     unsafe {
-        ptr::write_unaligned(config, value);
+        ptr::write_unaligned(
+            config,
+            XianWebEngineConfig {
+                glfw_shared_window: ptr::null_mut(),
+                glfw_api: Default::default(),
+                resources_dir: ptr::null(),
+                config_dir: ptr::null(),
+                default_width: 1,
+                default_height: 1,
+                thread_pool_cap: 0,
+                engine_flags: 0,
+            },
+        );
     }
 }
 
@@ -60,6 +58,9 @@ pub unsafe extern "C" fn xian_web_engine_config_init(config: *mut XianWebEngineC
 /// Initializes a view config struct with defaults.
 ///
 /// The caller may overwrite any fields after this call.
+/// The caller must fill `engine` before calling `xian_web_engine_view_create`.
+///
+/// Note: `width/height` default to 0, which means "use engine default size".
 ///
 /// #### Safety
 /// `config` must be valid for writes of `sizeof(XianWebEngineViewConfig)` bytes.
@@ -68,6 +69,9 @@ pub unsafe extern "C" fn xian_web_engine_config_init(config: *mut XianWebEngineC
 /// 使用默认值初始化 view 配置结构体。
 ///
 /// 调用方可在此调用后覆盖任意字段。
+/// 调用方在调用 `xian_web_engine_view_create` 前必须填充 `engine`。
+///
+/// 注意：`width/height` 默认值为 0，表示“使用引擎默认尺寸”。
 ///
 /// #### 安全
 /// `config` 必须可写，且至少可写入 `sizeof(XianWebEngineViewConfig)` 字节。
@@ -76,17 +80,16 @@ pub unsafe extern "C" fn xian_web_engine_view_config_init(config: *mut XianWebEn
         return;
     }
 
-    let value = XianWebEngineViewConfig {
-        struct_size: size_of::<XianWebEngineViewConfig>() as u32,
-        abi_version: super::XIAN_WEB_ENGINE_ABI_VERSION,
-        engine: ptr::null_mut(),
-        width: 1,
-        height: 1,
-        target_fps: 0,
-        view_flags: 0,
-    };
-
     unsafe {
-        ptr::write_unaligned(config, value);
+        ptr::write_unaligned(
+            config,
+            XianWebEngineViewConfig {
+                engine: ptr::null_mut(),
+                width: 0,
+                height: 0,
+                target_fps: 0,
+                view_flags: 0,
+            },
+        );
     }
 }

@@ -22,7 +22,6 @@ use super::{XianWebEngineView, XianWebEngineViewConfig};
 ///
 /// #### Safety
 /// - `config` must be valid for reads of at least `sizeof(XianWebEngineViewConfig)` bytes.
-/// - The config header must have a compatible `struct_size` and the correct ABI version.
 ///
 /// ### 中文
 /// 使用配置结构体创建一个 view。
@@ -34,13 +33,13 @@ use super::{XianWebEngineView, XianWebEngineViewConfig};
 ///
 /// #### 安全
 /// - `config` 必须至少可读 `sizeof(XianWebEngineViewConfig)` 字节。
-/// - 配置头部的 `struct_size` 必须兼容，且 ABI 版本必须匹配。
 pub unsafe extern "C" fn xian_web_engine_view_create(
     config: *const XianWebEngineViewConfig,
 ) -> *mut XianWebEngineView {
-    let Some(config) = (unsafe { super::read_abi_struct(config) }) else {
+    if config.is_null() {
         return ptr::null_mut();
-    };
+    }
+    let config = unsafe { ptr::read_unaligned(config) };
     let engine = config.engine;
     if engine.is_null() {
         return ptr::null_mut();
