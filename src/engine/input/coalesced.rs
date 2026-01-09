@@ -68,12 +68,6 @@ pub struct CoalescedMouseMove {
     /// pending 标记（`0` = 无待处理移动，`1` = 有待处理移动）。
     pending: AtomicU8,
     /// ### English
-    /// Padding bytes to keep `packed_pos` 8-byte aligned in `#[repr(C)]` layout.
-    ///
-    /// ### 中文
-    /// 填充：用于在 `#[repr(C)]` 布局下保持 `packed_pos` 的 8 字节对齐。
-    _padding: [u8; 7],
-    /// ### English
     /// Packed `(x, y)` mouse position as two `f32` bit patterns.
     ///
     /// ### 中文
@@ -90,7 +84,6 @@ impl Default for CoalescedMouseMove {
     fn default() -> Self {
         Self {
             pending: AtomicU8::new(0),
-            _padding: [0; 7],
             packed_pos: AtomicU64::new(0),
         }
     }
@@ -176,12 +169,6 @@ pub struct CoalescedResize {
     /// pending 标记（`0` = 无待处理 resize，`1` = 有待处理 resize）。
     pending: AtomicU8,
     /// ### English
-    /// Padding bytes to keep `packed_size` 8-byte aligned in `#[repr(C)]` layout.
-    ///
-    /// ### 中文
-    /// 填充：用于在 `#[repr(C)]` 布局下保持 `packed_size` 的 8 字节对齐。
-    _padding: [u8; 7],
-    /// ### English
     /// Packed `(width, height)` as two `u32` values.
     ///
     /// ### 中文
@@ -198,7 +185,6 @@ impl Default for CoalescedResize {
     fn default() -> Self {
         Self {
             pending: AtomicU8::new(0),
-            _padding: [0; 7],
             packed_size: AtomicU64::new(0),
         }
     }

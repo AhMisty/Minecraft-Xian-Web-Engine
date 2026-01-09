@@ -219,7 +219,6 @@ pub(super) fn run_servo_thread(
         threadpools_fallback_worker_num: tuned_threads,
         threadpools_async_runtime_workers_max: tuned_threads,
         threadpools_image_cache_workers_max: tuned_threads,
-        threadpools_resource_workers_max: tuned_threads,
         threadpools_webrender_workers_max: tuned_threads,
         threadpools_indexeddb_workers_max: tuned_threads,
         threadpools_webstorage_workers_max: tuned_threads,

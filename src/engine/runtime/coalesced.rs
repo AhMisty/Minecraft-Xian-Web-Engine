@@ -24,12 +24,6 @@ pub(super) struct PendingWork {
     /// ### 中文
     /// 待处理位图，包含用于合并唤醒的内部 busy 位。
     mask: AtomicU8,
-    /// ### English
-    /// Padding bytes for explicit `#[repr(C)]` layout (no semantic meaning).
-    ///
-    /// ### 中文
-    /// `#[repr(C)]` 显式布局的填充字节（无语义）。
-    _padding: [u8; 7],
 }
 
 const BUSY_BIT: u8 = 1 << 7;
@@ -49,7 +43,6 @@ impl Default for PendingWork {
     fn default() -> Self {
         Self {
             mask: AtomicU8::new(0),
-            _padding: [0; 7],
         }
     }
 }
