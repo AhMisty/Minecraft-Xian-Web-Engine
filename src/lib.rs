@@ -21,6 +21,7 @@
 
 mod abi;
 mod engine;
+mod error;
 mod input;
 mod rendering;
 mod resources;

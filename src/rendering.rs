@@ -14,6 +14,8 @@ use gleam::gl::{self, Gl};
 use servo::RgbaImage;
 use surfman::Error;
 
+use crate::error::EngineInitError;
+
 #[repr(u32)]
 #[derive(Clone, Copy)]
 /// ### English
@@ -46,7 +48,7 @@ impl GlApi {
     ///
     /// #### Returns
     /// - `Ok(GlApi)` on success.
-    /// - `Err(String)` when the value is unsupported.
+    /// - `Err(EngineInitError)` when the value is unsupported.
     ///
     /// ### 中文
     /// 将 C ABI 的 `gl_api` 值解析为 `GlApi`。
@@ -56,12 +58,12 @@ impl GlApi {
     ///
     /// #### 返回
     /// - 成功返回 `Ok(GlApi)`。
-    /// - 不支持时返回 `Err(String)`。
-    pub(crate) fn from_u32(value: u32) -> Result<Self, String> {
+    /// - 不支持时返回 `Err(EngineInitError)`。
+    pub(crate) fn from_u32(value: u32) -> Result<Self, EngineInitError> {
         match value {
             crate::abi::XIAN_WEB_ENGINE_GL_API_GL => Ok(Self::Gl),
             crate::abi::XIAN_WEB_ENGINE_GL_API_GLES => Ok(Self::Gles),
-            _ => Err("Unsupported gl_api".to_string()),
+            _ => Err(EngineInitError::UnsupportedGlApi { value }),
         }
     }
 }
@@ -86,6 +88,7 @@ type GlfwMakeContextCurrentFn = unsafe extern "C" fn(*mut c_void);
 ///
 /// #### Parameters
 /// - `addr`: Function pointer address (`0` means "NULL").
+/// - `name`: Symbol name (for debugging).
 ///
 /// #### Returns
 /// - `Some(T)` when `addr != 0`.
@@ -122,7 +125,7 @@ unsafe fn addr_to_fn<T>(addr: usize) -> Option<T> {
 ///
 /// #### Returns
 /// - `Ok(T)` when `addr != 0`.
-/// - `Err(String)` when `addr == 0`.
+/// - `Err(EngineInitError)` when `addr == 0`.
 ///
 /// #### Safety
 /// - `addr` must be a valid function pointer address whose signature matches `T`.
@@ -132,15 +135,16 @@ unsafe fn addr_to_fn<T>(addr: usize) -> Option<T> {
 ///
 /// #### 参数
 /// - `addr`：函数指针地址（`0` 表示“NULL”）。
+/// - `name`：符号名（用于调试定位）。
 ///
 /// #### 返回
 /// - `addr != 0` 时返回 `Ok(T)`。
-/// - `addr == 0` 时返回 `Err(String)`。
+/// - `addr == 0` 时返回 `Err(EngineInitError)`。
 ///
 /// #### 安全性
 /// - `addr` 必须是有效的函数指针地址，且其签名必须与 `T` 匹配。
-unsafe fn addr_to_fn_required<T>(addr: usize) -> Result<T, String> {
-    unsafe { addr_to_fn(addr) }.ok_or_else(|| "Required function pointer is NULL".to_string())
+unsafe fn addr_to_fn_required<T>(addr: usize, name: &'static str) -> Result<T, EngineInitError> {
+    unsafe { addr_to_fn(addr) }.ok_or(EngineInitError::NullFunctionPointer { name })
 }
 
 #[derive(Clone, Copy)]
@@ -191,7 +195,7 @@ impl GlfwContext {
     ///
     /// #### Returns
     /// - `Ok(GlfwContext)` on success.
-    /// - `Err(String)` if required function pointers are missing.
+    /// - `Err(EngineInitError)` if required function pointers are missing.
     ///
     /// #### Safety
     /// - `window` must be a valid `GLFWwindow*` for the embedder.
@@ -208,7 +212,7 @@ impl GlfwContext {
     ///
     /// #### 返回
     /// - 成功返回 `Ok(GlfwContext)`。
-    /// - 必需函数指针缺失时返回 `Err(String)`。
+    /// - 必需函数指针缺失时返回 `Err(EngineInitError)`。
     ///
     /// #### 安全性
     /// - `window` 必须是宿主侧有效的 `GLFWwindow*`。
@@ -218,9 +222,9 @@ impl GlfwContext {
         glfw_get_proc_address: usize,
         glfw_make_context_current: usize,
         assume_current: bool,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, EngineInitError> {
         let get_proc_address: GlfwGetProcAddressFn =
-            unsafe { addr_to_fn_required(glfw_get_proc_address)? };
+            unsafe { addr_to_fn_required(glfw_get_proc_address, "glfwGetProcAddress")? };
         let make_context_current: Option<GlfwMakeContextCurrentFn> =
             unsafe { addr_to_fn(glfw_make_context_current) };
         Ok(Self {
@@ -236,7 +240,7 @@ impl GlfwContext {
     ///
     /// #### Returns
     /// - `Ok(())` when the context is current or assumed current.
-    /// - `Err(String)` when the function pointer is missing.
+    /// - `Err(EngineInitError)` when the function pointer is missing.
     ///
     /// #### Safety
     /// - Must be called on the thread that is allowed to make the context current.
@@ -247,17 +251,19 @@ impl GlfwContext {
     ///
     /// #### 返回
     /// - 上下文已 current 或被假定为 current 时返回 `Ok(())`。
-    /// - 函数指针缺失时返回 `Err(String)`。
+    /// - 函数指针缺失时返回 `Err(EngineInitError)`。
     ///
     /// #### 安全性
     /// - 必须在允许切换上下文的线程调用。
     /// - `window` 指针必须保持有效。
-    pub(crate) unsafe fn make_current(&self) -> Result<(), String> {
+    pub(crate) unsafe fn make_current(&self) -> Result<(), EngineInitError> {
         if self.assume_current {
             return Ok(());
         }
         let Some(make_current) = self.make_context_current else {
-            return Err("glfwMakeContextCurrent is NULL".to_string());
+            return Err(EngineInitError::NullFunctionPointer {
+                name: "glfwMakeContextCurrent",
+            });
         };
         unsafe { make_current(self.window) };
         Ok(())
@@ -320,7 +326,7 @@ impl GlShared {
     ///
     /// #### Returns
     /// - `Ok(GlShared)` when loading succeeded.
-    /// - `Err(String)` on missing required entry points.
+    /// - `Err(EngineInitError)` on missing required entry points.
     ///
     /// #### Safety
     /// - The OpenGL context must be current before calling.
@@ -334,11 +340,11 @@ impl GlShared {
     ///
     /// #### 返回
     /// - 加载成功返回 `Ok(GlShared)`。
-    /// - 缺少必需入口时返回 `Err(String)`。
+    /// - 缺少必需入口时返回 `Err(EngineInitError)`。
     ///
     /// #### 安全性
     /// - 调用前 OpenGL 上下文必须已 current。
-    pub(crate) unsafe fn new(gl_api: GlApi, glfw: &GlfwContext) -> Result<Self, String> {
+    pub(crate) unsafe fn new(gl_api: GlApi, glfw: &GlfwContext) -> Result<Self, EngineInitError> {
         validate_gl_entry_points(glfw)?;
         let gleam_gl: Rc<dyn Gl> = match gl_api {
             GlApi::Gl => unsafe { gl::GlFns::load_with(|s| glfw.load(s) as *const _) },
@@ -364,7 +370,7 @@ impl GlShared {
 ///
 /// #### Returns
 /// - `Ok(())` when all required symbols are available.
-/// - `Err(String)` when any required symbol is missing.
+/// - `Err(EngineInitError)` when any required symbol is missing.
 ///
 /// ### 中文
 /// 校验本嵌入层所需的最小 OpenGL 入口集合。
@@ -376,8 +382,8 @@ impl GlShared {
 ///
 /// #### 返回
 /// - 全部必需符号可用时返回 `Ok(())`。
-/// - 任意必需符号缺失时返回 `Err(String)`。
-fn validate_gl_entry_points(glfw: &GlfwContext) -> Result<(), String> {
+/// - 任意必需符号缺失时返回 `Err(EngineInitError)`。
+fn validate_gl_entry_points(glfw: &GlfwContext) -> Result<(), EngineInitError> {
     const REQUIRED: &[&str] = &[
         "glGenFramebuffers",
         "glBindFramebuffer",
@@ -400,7 +406,7 @@ fn validate_gl_entry_points(glfw: &GlfwContext) -> Result<(), String> {
 
     for &name in REQUIRED {
         if glfw.load(name).is_null() {
-            return Err(format!("Missing OpenGL function: {name}"));
+            return Err(EngineInitError::MissingOpenGlEntryPoint { name });
         }
     }
     Ok(())
@@ -777,8 +783,22 @@ impl servo::RenderingContext for GlfwTextureContext {
     /// ### English
     /// Reads pixels from the underlying framebuffer into an image.
     ///
+    /// #### Parameters
+    /// - `source_rectangle`: Rectangle to read (in device pixels).
+    ///
+    /// #### Returns
+    /// - `Some(RgbaImage)` on success.
+    /// - `None` when the readback fails or is rejected by Servo.
+    ///
     /// ### 中文
     /// 从底层帧缓冲读取像素并生成图片。
+    ///
+    /// #### 参数
+    /// - `source_rectangle`：读取区域（设备像素）。
+    ///
+    /// #### 返回
+    /// - 成功返回 `Some(RgbaImage)`。
+    /// - 读取失败或被 Servo 拒绝时返回 `None`。
     fn read_to_image(&self, source_rectangle: servo::DeviceIntRect) -> Option<RgbaImage> {
         self.framebuffer.borrow().read_to_image(source_rectangle)
     }
@@ -786,8 +806,14 @@ impl servo::RenderingContext for GlfwTextureContext {
     /// ### English
     /// Returns the current physical size.
     ///
+    /// #### Returns
+    /// - Current size in physical pixels.
+    ///
     /// ### 中文
     /// 返回当前物理尺寸。
+    ///
+    /// #### 返回
+    /// - 当前尺寸（物理像素）。
     fn size(&self) -> PhysicalSize<u32> {
         self.size.get()
     }
@@ -795,8 +821,14 @@ impl servo::RenderingContext for GlfwTextureContext {
     /// ### English
     /// Resizes the framebuffer (no-op if unchanged).
     ///
+    /// #### Parameters
+    /// - `size`: New size in physical pixels.
+    ///
     /// ### 中文
     /// 调整帧缓冲尺寸（若无变化则无操作）。
+    ///
+    /// #### 参数
+    /// - `size`：新尺寸（物理像素）。
     fn resize(&self, size: PhysicalSize<u32>) {
         let size = PhysicalSize::new(size.width.max(1), size.height.max(1));
         if self.size.get() == size {
@@ -821,8 +853,16 @@ impl servo::RenderingContext for GlfwTextureContext {
     /// ### English
     /// Ensures the embedder context is current.
     ///
+    /// #### Returns
+    /// - `Ok(())` when the context is current (or assumed current).
+    /// - `Err(Error)` when making the context current fails.
+    ///
     /// ### 中文
     /// 确保宿主上下文为 current。
+    ///
+    /// #### 返回
+    /// - 上下文为 current（或被假定为 current）时返回 `Ok(())`。
+    /// - 切换上下文失败时返回 `Err(Error)`。
     fn make_current(&self) -> Result<(), Error> {
         if unsafe { self.glfw.make_current() }.is_err() {
             return Err(Error::Failed);
@@ -833,8 +873,14 @@ impl servo::RenderingContext for GlfwTextureContext {
     /// ### English
     /// Returns the Gleam GL entry.
     ///
+    /// #### Returns
+    /// - Gleam GL API wrapper.
+    ///
     /// ### 中文
     /// 返回 Gleam GL 入口。
+    ///
+    /// #### 返回
+    /// - Gleam GL API 封装。
     fn gleam_gl_api(&self) -> Rc<dyn Gl> {
         self.gleam_gl.clone()
     }
@@ -842,8 +888,14 @@ impl servo::RenderingContext for GlfwTextureContext {
     /// ### English
     /// Returns the Glow GL context.
     ///
+    /// #### Returns
+    /// - Glow GL context.
+    ///
     /// ### 中文
     /// 返回 Glow GL 上下文。
+    ///
+    /// #### 返回
+    /// - Glow GL 上下文。
     fn glow_gl_api(&self) -> Arc<glow::Context> {
         self.glow_gl.clone()
     }
@@ -851,8 +903,14 @@ impl servo::RenderingContext for GlfwTextureContext {
     /// ### English
     /// Returns the refresh driver used by Servo.
     ///
+    /// #### Returns
+    /// - Optional refresh driver.
+    ///
     /// ### 中文
     /// 返回 Servo 使用的刷新驱动。
+    ///
+    /// #### 返回
+    /// - 可选的刷新驱动。
     fn refresh_driver(&self) -> Option<Rc<dyn servo::RefreshDriver>> {
         self.refresh_driver.clone()
     }

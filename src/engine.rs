@@ -14,6 +14,7 @@ use std::sync::{Arc, Once, RwLock};
 use dpi::PhysicalSize;
 use servo::{RefreshDriver, WebView, WebViewBuilder, WebViewDelegate};
 
+use crate::error::EngineInitError;
 use crate::input::{XianWebEngineInputEvent, map_input_event};
 use crate::rendering::{GlApi, GlShared, GlfwContext, GlfwTextureContext};
 
@@ -209,14 +210,15 @@ pub(crate) struct ViewCreateParams {
     pub(crate) height: u32,
 
     /// ### English
-    /// Optional initial URL string.
+    /// Optional initial URL to load after creation.
     ///
     /// ### 中文
-    /// 可选的初始 URL 字符串。
-    pub(crate) initial_url: Option<String>,
+    /// 可选的初始 URL（创建后自动加载）。
+    pub(crate) initial_url: Option<url::Url>,
 }
 
 #[derive(Clone, Copy)]
+/// ### English
 /// ### English
 /// Engine behavior toggles (kept small for hot-path checks).
 ///
@@ -254,10 +256,26 @@ struct PendingWaker {
 }
 
 impl servo::EventLoopWaker for PendingWaker {
+    /// ### English
+    /// Clones this waker as a boxed trait object.
+    ///
+    /// #### Returns
+    /// - A new boxed waker that shares the same pending flag.
+    ///
+    /// ### 中文
+    /// 将该唤醒器克隆为装箱的 trait object。
+    ///
+    /// #### 返回
+    /// - 新的装箱唤醒器，与当前实例共享同一个 pending 标记。
     fn clone_box(&self) -> Box<dyn servo::EventLoopWaker> {
         Box::new(self.clone())
     }
 
+    /// ### English
+    /// Wakes the event loop by marking the engine as having pending work.
+    ///
+    /// ### 中文
+    /// 通过将引擎标记为“有待处理工作”来唤醒事件循环。
     fn wake(&self) {
         self.tick_pending.store(true, Ordering::Relaxed);
     }
@@ -361,17 +379,41 @@ struct ViewDirtyDelegate {
     /// ### 中文
     /// `true` 表示已有新帧可用，需要进行绘制。
     dirty: Cell<bool>,
+
+    /// ### English
+    /// Shared dirty-view counter owned by the engine.
+    ///
+    /// This is incremented on the clean→dirty transition and decremented on the dirty→clean
+    /// transition.
+    ///
+    /// ### 中文
+    /// 引擎持有的“dirty view 计数器”共享引用。
+    ///
+    /// 该计数在“从干净→变脏”时递增，在“从变脏→清理”时递减。
+    dirty_view_count: Rc<Cell<usize>>,
 }
 
 impl ViewDirtyDelegate {
     /// ### English
     /// Creates a new delegate marked as dirty.
     ///
+    /// This increments the shared dirty-view counter.
+    ///
+    /// #### Parameters
+    /// - `dirty_view_count`: Shared dirty-view counter owned by the engine.
+    ///
     /// ### 中文
     /// 创建新的 delegate（初始标记为 dirty）。
-    fn new() -> Self {
+    ///
+    /// 该调用会递增引擎共享的 dirty-view 计数。
+    ///
+    /// #### 参数
+    /// - `dirty_view_count`：引擎持有的共享 dirty-view 计数器。
+    fn new(dirty_view_count: Rc<Cell<usize>>) -> Self {
+        dirty_view_count.set(dirty_view_count.get().saturating_add(1));
         Self {
             dirty: Cell::new(true),
+            dirty_view_count,
         }
     }
 
@@ -387,10 +429,59 @@ impl ViewDirtyDelegate {
     /// ### English
     /// Clears the dirty flag.
     ///
+    /// Also updates the engine-level dirty-view counter.
+    ///
     /// ### 中文
     /// 清除 dirty 标记。
+    ///
+    /// 同时更新引擎级的 dirty-view 计数。
     fn clear(&self) {
-        self.dirty.set(false);
+        let _ = self.take_dirty();
+    }
+
+    /// ### English
+    /// Clears the dirty flag and returns whether it was previously set.
+    ///
+    /// This updates the engine-level dirty-view counter on the dirty→clean transition.
+    ///
+    /// #### Returns
+    /// - `true` if the flag was dirty and is now cleared.
+    /// - `false` if the flag was already clean.
+    ///
+    /// ### 中文
+    /// 清除 dirty 标记，并返回清除前是否为 dirty。
+    ///
+    /// 在“dirty→clean”时，该函数会同步更新引擎级的 dirty-view 计数。
+    ///
+    /// #### 返回
+    /// - 之前为 dirty 且本次已清除时返回 `true`。
+    /// - 之前已为 clean 时返回 `false`。
+    fn take_dirty(&self) -> bool {
+        if !self.dirty.replace(false) {
+            return false;
+        }
+
+        let count = self.dirty_view_count.get();
+        debug_assert!(count > 0);
+        self.dirty_view_count.set(count.saturating_sub(1));
+        true
+    }
+
+    /// ### English
+    /// Marks the view as dirty.
+    ///
+    /// This updates the engine-level dirty-view counter only on the clean→dirty transition.
+    ///
+    /// ### 中文
+    /// 将 view 标记为 dirty。
+    ///
+    /// 仅在“clean→dirty”时更新引擎级的 dirty-view 计数。
+    fn mark_dirty(&self) {
+        if self.dirty.replace(true) {
+            return;
+        }
+        self.dirty_view_count
+            .set(self.dirty_view_count.get().saturating_add(1));
     }
 }
 
@@ -398,10 +489,16 @@ impl WebViewDelegate for ViewDirtyDelegate {
     /// ### English
     /// Marks the view as dirty when Servo reports a new frame is ready.
     ///
+    /// #### Parameters
+    /// - `_webview`: WebView handle provided by Servo (unused).
+    ///
     /// ### 中文
     /// 当 Servo 通知新帧就绪时，将 view 标记为 dirty。
+    ///
+    /// #### 参数
+    /// - `_webview`：Servo 提供的 WebView 句柄（未使用）。
     fn notify_new_frame_ready(&self, _webview: WebView) {
-        self.dirty.set(true);
+        self.mark_dirty();
     }
 }
 
@@ -460,6 +557,18 @@ pub struct XianWebEngine {
     /// ### 中文
     /// 当前注册的 view 的原始指针（来自 `Box` 的稳定地址）。
     views: Vec<NonNull<XianWebEngineView>>,
+
+    /// ### English
+    /// Number of views currently marked as dirty (has a frame ready).
+    ///
+    /// This is updated by each `ViewDirtyDelegate` so `needs_tick` can stay O(1) when `auto_paint`
+    /// is enabled.
+    ///
+    /// ### 中文
+    /// 当前被标记为 dirty（已生成新帧）的 view 数量。
+    ///
+    /// 该计数由每个 `ViewDirtyDelegate` 维护，使得在开启 `auto_paint` 时 `needs_tick` 保持 O(1)。
+    dirty_view_count: Rc<Cell<usize>>,
 }
 
 impl XianWebEngine {
@@ -471,7 +580,7 @@ impl XianWebEngine {
     ///
     /// #### Returns
     /// - `Ok(XianWebEngine)` on success.
-    /// - `Err(String)` on initialization failure.
+    /// - `Err(EngineInitError)` on initialization failure.
     ///
     /// ### 中文
     /// 创建新的引擎实例。
@@ -481,8 +590,8 @@ impl XianWebEngine {
     ///
     /// #### 返回
     /// - 成功返回 `Ok(XianWebEngine)`。
-    /// - 初始化失败返回 `Err(String)`。
-    pub(crate) fn new(params: EngineCreateParams) -> Result<Self, String> {
+    /// - 初始化失败返回 `Err(EngineInitError)`。
+    pub(crate) fn new(params: EngineCreateParams) -> Result<Self, EngineInitError> {
         RUSTLS_PROVIDER_INIT.call_once(|| {
             /*
             ### English
@@ -574,7 +683,7 @@ impl XianWebEngine {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
-            return Err("Servo is already initialized".to_string());
+            return Err(EngineInitError::ServoAlreadyInitialized);
         }
 
         let servo = servo::ServoBuilder::default()
@@ -591,6 +700,7 @@ impl XianWebEngine {
             gl,
             servo,
             views: Vec::new(),
+            dirty_view_count: Rc::new(Cell::new(0)),
         })
     }
 
@@ -612,13 +722,8 @@ impl XianWebEngine {
             return true;
         }
 
-        if self.options.auto_paint {
-            for &ptr in &self.views {
-                let view = unsafe { ptr.as_ref() };
-                if view.needs_paint() {
-                    return true;
-                }
-            }
+        if self.options.auto_paint && self.dirty_view_count.get() != 0 {
+            return true;
         }
 
         false
@@ -665,8 +770,7 @@ impl XianWebEngine {
     /// - `params`: View creation parameters.
     ///
     /// #### Returns
-    /// - `Ok(NonNull<XianWebEngineView>)` on success.
-    /// - `Err(String)` on failure.
+    /// - A non-null view pointer.
     ///
     /// ### 中文
     /// 创建新的 view 并注册到该引擎中。
@@ -675,12 +779,8 @@ impl XianWebEngine {
     /// - `params`：View 创建参数。
     ///
     /// #### 返回
-    /// - 成功返回 `Ok(NonNull<XianWebEngineView>)`。
-    /// - 失败返回 `Err(String)`。
-    pub(crate) fn create_view(
-        &mut self,
-        params: ViewCreateParams,
-    ) -> Result<NonNull<XianWebEngineView>, String> {
+    /// - 非空的 view 指针。
+    pub(crate) fn create_view(&mut self, params: ViewCreateParams) -> NonNull<XianWebEngineView> {
         let size = PhysicalSize::new(params.width.max(1), params.height.max(1));
 
         let rendering_context = Rc::new(GlfwTextureContext::new(
@@ -690,7 +790,7 @@ impl XianWebEngine {
             Some(self.refresh_driver.clone() as Rc<dyn RefreshDriver>),
         ));
 
-        let delegate = Rc::new(ViewDirtyDelegate::new());
+        let delegate = Rc::new(ViewDirtyDelegate::new(Rc::clone(&self.dirty_view_count)));
 
         let webview = WebViewBuilder::new(&self.servo, rendering_context.clone())
             .delegate(delegate.clone())
@@ -698,14 +798,11 @@ impl XianWebEngine {
 
         webview.show();
 
-        if let Some(url) = params.initial_url.as_deref()
-            && let Ok(url) = url::Url::parse(url)
-        {
+        if let Some(url) = params.initial_url {
             webview.load(url);
         }
 
-        let engine_ptr = NonNull::new(self as *mut XianWebEngine)
-            .ok_or_else(|| "Engine pointer is NULL".to_string())?;
+        let engine_ptr = NonNull::from(&mut *self);
 
         let view = Box::new(XianWebEngineView {
             engine: Cell::new(Some(engine_ptr)),
@@ -714,10 +811,9 @@ impl XianWebEngine {
             delegate,
         });
 
-        let ptr = NonNull::new(Box::into_raw(view))
-            .ok_or_else(|| "Failed to allocate view".to_string())?;
+        let ptr = NonNull::from(Box::leak(view));
         self.views.push(ptr);
-        Ok(ptr)
+        ptr
     }
 
     /// ### English
@@ -791,15 +887,21 @@ impl XianWebEngineView {
     /// ### English
     /// Destroys a boxed view and unregisters it from its engine when still attached.
     ///
+    /// This also clears the dirty flag to keep the engine's dirty-view counter consistent.
+    ///
     /// #### Parameters
     /// - `view`: Boxed view to destroy.
     ///
     /// ### 中文
     /// 销毁装箱的 view；若仍绑定引擎则同时从引擎中注销。
     ///
+    /// 同时会清除 dirty 标记，以保持引擎 dirty-view 计数的一致性。
+    ///
     /// #### 参数
     /// - `view`：要销毁的装箱 view。
     pub(crate) fn destroy_boxed(mut view: Box<Self>) {
+        view.delegate.clear();
+
         let view_ptr = NonNull::new(view.as_mut() as *mut XianWebEngineView)
             .expect("NonNull from Box is guaranteed");
 
@@ -884,11 +986,10 @@ impl XianWebEngineView {
     /// - 确实执行了绘制则返回 `true`。
     /// - view 非 dirty 则返回 `false`。
     pub(crate) fn paint(&self) -> bool {
-        if !self.delegate.is_dirty() {
+        if !self.delegate.take_dirty() {
             return false;
         }
 
-        self.delegate.clear();
         self.webview.paint();
         true
     }

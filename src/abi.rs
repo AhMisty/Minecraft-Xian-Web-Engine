@@ -149,6 +149,11 @@ pub struct XianWebEngineConfig {
 }
 
 impl Default for XianWebEngineConfig {
+    /// ### English
+    /// Returns the ABI default configuration values.
+    ///
+    /// ### 中文
+    /// 返回 ABI 默认配置值。
     fn default() -> Self {
         Self {
             glfw_window: ptr::null_mut(),
@@ -206,6 +211,11 @@ pub struct XianWebEngineViewConfig {
 }
 
 impl Default for XianWebEngineViewConfig {
+    /// ### English
+    /// Returns the ABI default view configuration values.
+    ///
+    /// ### 中文
+    /// 返回 ABI 默认 view 配置值。
     fn default() -> Self {
         Self {
             engine: ptr::null_mut(),
@@ -603,7 +613,8 @@ pub unsafe extern "C" fn xian_web_engine_view_create(
         return ptr::null_mut();
     };
 
-    let initial_url = unsafe { cstr_to_str(config.initial_url) }.map(str::to_owned);
+    let initial_url =
+        unsafe { cstr_to_str(config.initial_url) }.and_then(|url| url::Url::parse(url).ok());
 
     let params = ViewCreateParams {
         width: config.width,
@@ -611,10 +622,7 @@ pub unsafe extern "C" fn xian_web_engine_view_create(
         initial_url,
     };
 
-    match engine.create_view(params) {
-        Ok(ptr) => ptr.as_ptr(),
-        Err(_) => ptr::null_mut(),
-    }
+    engine.create_view(params).as_ptr()
 }
 
 #[unsafe(no_mangle)]
