@@ -190,4 +190,5 @@ This version is a full rewrite with a new high-performance model:
 See the C header block above for the full ABI.
 
 Notes:
+
 - `xian_web_engine_set_config_dir` / `xian_web_engine_set_thread_pool_cap` are process-global and must be called before creating the engine.
