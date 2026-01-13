@@ -32,11 +32,17 @@ impl DirectoryResourceReader {
     /// #### Parameters
     /// - `root`: Root directory path.
     ///
+    /// #### Returns
+    /// - A new `DirectoryResourceReader`.
+    ///
     /// ### 中文
     /// 创建基于目录的资源读取器。
     ///
     /// #### 参数
     /// - `root`：根目录路径。
+    ///
+    /// #### 返回
+    /// - 新的 `DirectoryResourceReader`。
     pub fn new(root: PathBuf) -> Self {
         Self { root }
     }
@@ -68,8 +74,14 @@ impl servo::resources::ResourceReaderMethods for DirectoryResourceReader {
     /// ### English
     /// Lists specific files that must be accessible inside the Servo sandbox.
     ///
+    /// #### Returns
+    /// - File path list (empty in this embedder).
+    ///
     /// ### 中文
     /// 列出 Servo 沙箱内需要访问的具体文件。
+    ///
+    /// #### 返回
+    /// - 文件路径列表（本实现始终为空）。
     fn sandbox_access_files(&self) -> Vec<PathBuf> {
         vec![]
     }
@@ -77,8 +89,14 @@ impl servo::resources::ResourceReaderMethods for DirectoryResourceReader {
     /// ### English
     /// Lists directories that must be accessible inside the Servo sandbox.
     ///
+    /// #### Returns
+    /// - Directory path list (contains the resource root directory).
+    ///
     /// ### 中文
     /// 列出 Servo 沙箱内需要访问的目录。
+    ///
+    /// #### 返回
+    /// - 目录路径列表（包含资源根目录）。
     fn sandbox_access_files_dirs(&self) -> Vec<PathBuf> {
         vec![self.root.clone()]
     }

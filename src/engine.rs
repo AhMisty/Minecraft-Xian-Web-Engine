@@ -8,15 +8,15 @@ use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::ptr::NonNull;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Once, RwLock};
 
 use dpi::PhysicalSize;
 use servo::{RefreshDriver, WebView, WebViewBuilder, WebViewDelegate};
 
 use crate::error::EngineInitError;
+use crate::gl::{GlApi, GlHandles, GlfwContext, TextureContext};
 use crate::input::{XianWebEngineInputEvent, map_input_event};
-use crate::rendering::{GlApi, GlShared, GlfwContext, GlfwTextureContext};
 
 /// ### English
 /// One-time initialization for rustls crypto provider installation.
@@ -31,6 +31,48 @@ static RUSTLS_PROVIDER_INIT: Once = Once::new();
 /// ### 中文
 /// Servo 是否已在本进程中初始化。
 static SERVO_INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+/// ### English
+/// Process-global embedder GLFW window pointer (`GLFWwindow*` as `usize`, 0 = unset).
+///
+/// ### 中文
+/// 进程全局的宿主 GLFW window 指针（`GLFWwindow*` 以 `usize` 保存，0 表示未设置）。
+static GLFW_WINDOW: AtomicUsize = AtomicUsize::new(0);
+
+/// ### English
+/// Process-global `glfwGetProcAddress` function pointer address (0 = unset).
+///
+/// ### 中文
+/// 进程全局的 `glfwGetProcAddress` 函数指针地址（0 表示未设置）。
+static GLFW_GET_PROC_ADDRESS: AtomicUsize = AtomicUsize::new(0);
+
+/// ### English
+/// Process-global optional `glfwMakeContextCurrent` function pointer address (0 = unset).
+///
+/// ### 中文
+/// 进程全局的可选 `glfwMakeContextCurrent` 函数指针地址（0 表示未设置）。
+static GLFW_MAKE_CONTEXT_CURRENT: AtomicUsize = AtomicUsize::new(0);
+
+/// ### English
+/// Process-global OpenGL API selector (`crate::ffi::XIAN_WEB_ENGINE_GL_API_*`).
+///
+/// ### 中文
+/// 进程全局的 OpenGL API 选择值（`crate::ffi::XIAN_WEB_ENGINE_GL_API_*`）。
+static GL_API: AtomicU32 = AtomicU32::new(crate::ffi::XIAN_WEB_ENGINE_GL_API_GL);
+
+/// ### English
+/// Process-global "assume current context" toggle (captured on init).
+///
+/// ### 中文
+/// 进程全局的“假定上下文已 current”开关（在初始化时捕获）。
+static ASSUME_CONTEXT_CURRENT: AtomicBool = AtomicBool::new(true);
+
+/// ### English
+/// Process-global auto-paint toggle (captured on init).
+///
+/// ### 中文
+/// 进程全局的自动绘制开关（在初始化时捕获）。
+static AUTO_PAINT: AtomicBool = AtomicBool::new(true);
 
 /// ### English
 /// Process-global Servo config directory override.
@@ -50,10 +92,156 @@ static THREAD_POOL_CAP: AtomicU32 = AtomicU32::new(0);
 /// ### English
 /// Returns whether Servo has been initialized in this process.
 ///
+/// #### Returns
+/// - `true` if Servo has been initialized.
+/// - `false` otherwise.
+///
 /// ### 中文
 /// 返回 Servo 是否已在本进程中初始化。
-pub(crate) fn is_initialized() -> bool {
+///
+/// #### 返回
+/// - 已初始化则返回 `true`。
+/// - 否则返回 `false`。
+pub(crate) fn is_servo_initialized() -> bool {
     SERVO_INITIALIZED.load(Ordering::Relaxed)
+}
+
+#[inline]
+/// ### English
+/// Sets the process-global embedder GLFW context/proc addresses.
+///
+/// This must be called before Servo is initialized.
+///
+/// #### Parameters
+/// - `glfw_window`: Embedder-owned `GLFWwindow*` (as `*mut c_void`).
+/// - `glfw_get_proc_address`: Address of `glfwGetProcAddress` (as `uintptr_t`).
+/// - `glfw_make_context_current`: Address of `glfwMakeContextCurrent` (as `uintptr_t`, 0 allowed).
+///
+/// #### Returns
+/// - `true` if the values were accepted.
+/// - `false` if Servo is already initialized.
+///
+/// ### 中文
+/// 设置进程全局的宿主 GLFW 上下文/函数指针。
+///
+/// 必须在 Servo 初始化之前调用。
+///
+/// #### 参数
+/// - `glfw_window`：宿主侧 `GLFWwindow*`（以 `*mut c_void` 形式传入）。
+/// - `glfw_get_proc_address`：`glfwGetProcAddress` 的地址（`uintptr_t`）。
+/// - `glfw_make_context_current`：`glfwMakeContextCurrent` 的地址（`uintptr_t`，允许为 0）。
+///
+/// #### 返回
+/// - 值被接受则返回 `true`。
+/// - Servo 已初始化则返回 `false`。
+pub(crate) fn set_glfw_context(
+    glfw_window: *mut std::ffi::c_void,
+    glfw_get_proc_address: usize,
+    glfw_make_context_current: usize,
+) -> bool {
+    if is_servo_initialized() {
+        return false;
+    }
+    GLFW_WINDOW.store(glfw_window as usize, Ordering::Relaxed);
+    GLFW_GET_PROC_ADDRESS.store(glfw_get_proc_address, Ordering::Relaxed);
+    GLFW_MAKE_CONTEXT_CURRENT.store(glfw_make_context_current, Ordering::Relaxed);
+    true
+}
+
+#[inline]
+/// ### English
+/// Sets the process-global OpenGL API selector (`crate::ffi::XIAN_WEB_ENGINE_GL_API_*`).
+///
+/// This must be called before Servo is initialized.
+///
+/// #### Parameters
+/// - `gl_api`: Raw selector value from the C ABI.
+///
+/// #### Returns
+/// - `true` if the value was accepted.
+/// - `false` if Servo is already initialized.
+///
+/// ### 中文
+/// 设置进程全局的 OpenGL API 选择值（`crate::ffi::XIAN_WEB_ENGINE_GL_API_*`）。
+///
+/// 必须在 Servo 初始化之前调用。
+///
+/// #### 参数
+/// - `gl_api`：来自 C ABI 的原始选择值。
+///
+/// #### 返回
+/// - 值被接受则返回 `true`。
+/// - Servo 已初始化则返回 `false`。
+pub(crate) fn set_gl_api(gl_api: u32) -> bool {
+    if is_servo_initialized() {
+        return false;
+    }
+    GL_API.store(gl_api, Ordering::Relaxed);
+    true
+}
+
+#[inline]
+/// ### English
+/// Sets whether to assume the embedder context is already current on the calling thread.
+///
+/// This must be called before Servo is initialized.
+///
+/// #### Parameters
+/// - `assume_context_current`: `true` to skip calling `glfwMakeContextCurrent` on hot paths.
+///
+/// #### Returns
+/// - `true` if the value was accepted.
+/// - `false` if Servo is already initialized.
+///
+/// ### 中文
+/// 设置是否假定宿主上下文已在调用线程 current。
+///
+/// 必须在 Servo 初始化之前调用。
+///
+/// #### 参数
+/// - `assume_context_current`：为 `true` 时在热路径跳过调用 `glfwMakeContextCurrent`。
+///
+/// #### 返回
+/// - 值被接受则返回 `true`。
+/// - Servo 已初始化则返回 `false`。
+pub(crate) fn set_assume_context_current(assume_context_current: bool) -> bool {
+    if is_servo_initialized() {
+        return false;
+    }
+    ASSUME_CONTEXT_CURRENT.store(assume_context_current, Ordering::Relaxed);
+    true
+}
+
+#[inline]
+/// ### English
+/// Sets whether to auto-paint dirty views inside `tick`.
+///
+/// This must be called before Servo is initialized.
+///
+/// #### Parameters
+/// - `auto_paint`: `true` to paint all dirty views after each `tick`.
+///
+/// #### Returns
+/// - `true` if the value was accepted.
+/// - `false` if Servo is already initialized.
+///
+/// ### 中文
+/// 设置是否在 `tick` 内自动绘制 dirty view。
+///
+/// 必须在 Servo 初始化之前调用。
+///
+/// #### 参数
+/// - `auto_paint`：为 `true` 时在每次 `tick` 后绘制所有 dirty view。
+///
+/// #### 返回
+/// - 值被接受则返回 `true`。
+/// - Servo 已初始化则返回 `false`。
+pub(crate) fn set_auto_paint(auto_paint: bool) -> bool {
+    if is_servo_initialized() {
+        return false;
+    }
+    AUTO_PAINT.store(auto_paint, Ordering::Relaxed);
+    true
 }
 
 #[inline]
@@ -81,10 +269,11 @@ pub(crate) fn is_initialized() -> bool {
 /// - 值被接受则返回 `true`。
 /// - Servo 已初始化则返回 `false`。
 pub(crate) fn set_config_dir(path: Option<PathBuf>) -> bool {
-    if is_initialized() {
+    if is_servo_initialized() {
         return false;
     }
-    *CONFIG_DIR.write().unwrap() = path;
+    let mut config_dir = CONFIG_DIR.write().unwrap_or_else(|e| e.into_inner());
+    *config_dir = path;
     true
 }
 
@@ -92,10 +281,18 @@ pub(crate) fn set_config_dir(path: Option<PathBuf>) -> bool {
 /// ### English
 /// Gets the process-global Servo config directory override.
 ///
+/// #### Returns
+/// - `Some(PathBuf)` when an override directory is set.
+/// - `None` when no override is configured.
+///
 /// ### 中文
 /// 获取进程全局的 Servo 配置目录覆盖值。
+///
+/// #### 返回
+/// - 已设置覆盖目录时返回 `Some(PathBuf)`。
+/// - 未设置覆盖时返回 `None`。
 pub(crate) fn config_dir() -> Option<PathBuf> {
-    CONFIG_DIR.read().unwrap().clone()
+    CONFIG_DIR.read().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 #[inline]
@@ -123,7 +320,7 @@ pub(crate) fn config_dir() -> Option<PathBuf> {
 /// - 值被接受则返回 `true`。
 /// - Servo 已初始化则返回 `false`。
 pub(crate) fn set_thread_pool_cap(cap: u32) -> bool {
-    if is_initialized() {
+    if is_servo_initialized() {
         return false;
     }
     THREAD_POOL_CAP.store(cap, Ordering::Relaxed);
@@ -134,17 +331,179 @@ pub(crate) fn set_thread_pool_cap(cap: u32) -> bool {
 /// ### English
 /// Gets the process-global worker thread cap (`0` = no cap).
 ///
+/// #### Returns
+/// - Maximum number of worker threads (`0` means "no cap").
+///
 /// ### 中文
 /// 获取进程全局的工作线程上限（`0` = 不限制）。
+///
+/// #### 返回
+/// - 工作线程上限（`0` 表示“不限制”）。
 pub(crate) fn thread_pool_cap() -> u32 {
     THREAD_POOL_CAP.load(Ordering::Relaxed)
 }
 
+thread_local! {
+    /// ### English
+    /// Thread-local engine instance (created lazily by `create_view`).
+    ///
+    /// ### 中文
+    /// 线程本地的引擎实例（由 `create_view` 惰性创建）。
+    static ENGINE: RefCell<Option<Engine>> = RefCell::new(None);
+}
+
+#[inline]
 /// ### English
-/// Parameters for creating an engine (parsed from the C ABI config).
+/// Builds `EngineCreateParams` from process-global settings.
+///
+/// #### Returns
+/// - `Ok(EngineCreateParams)` when required values are present.
+/// - `Err(EngineInitError)` when required pointers are missing.
 ///
 /// ### 中文
-/// 引擎创建参数（由 C ABI 配置解析而来）。
+/// 从进程全局设置构建 `EngineCreateParams`。
+///
+/// #### 返回
+/// - 必需值齐全时返回 `Ok(EngineCreateParams)`。
+/// - 必需指针缺失时返回 `Err(EngineInitError)`。
+fn engine_params_from_globals() -> Result<EngineCreateParams, EngineInitError> {
+    let glfw_window = GLFW_WINDOW.load(Ordering::Relaxed) as *mut std::ffi::c_void;
+    if glfw_window.is_null() {
+        return Err(EngineInitError::NullFunctionPointer {
+            name: "glfw_window",
+        });
+    }
+    let glfw_get_proc_address = GLFW_GET_PROC_ADDRESS.load(Ordering::Relaxed);
+    if glfw_get_proc_address == 0 {
+        return Err(EngineInitError::NullFunctionPointer {
+            name: "glfwGetProcAddress",
+        });
+    }
+
+    Ok(EngineCreateParams {
+        glfw_window,
+        glfw_get_proc_address,
+        glfw_make_context_current: GLFW_MAKE_CONTEXT_CURRENT.load(Ordering::Relaxed),
+        gl_api: GL_API.load(Ordering::Relaxed),
+        assume_context_current: ASSUME_CONTEXT_CURRENT.load(Ordering::Relaxed),
+        auto_paint: AUTO_PAINT.load(Ordering::Relaxed),
+    })
+}
+
+#[inline]
+/// ### English
+/// Returns whether the engine likely has pending work (best-effort hint).
+///
+/// When no engine has been created yet, this returns `false`.
+///
+/// #### Returns
+/// - `true` when the engine likely has pending work.
+/// - `false` when the engine appears idle or has not been created yet.
+///
+/// ### 中文
+/// 返回引擎是否可能存在待处理工作（best-effort 提示）。
+///
+/// 当引擎尚未创建时返回 `false`。
+///
+/// #### 返回
+/// - 可能需要 tick 时返回 `true`。
+/// - 看起来空闲或尚未创建时返回 `false`。
+pub(crate) fn needs_tick() -> bool {
+    ENGINE.with(|cell| {
+        let binding = cell.borrow();
+        let Some(engine) = binding.as_ref() else {
+            return false;
+        };
+        engine.needs_tick()
+    })
+}
+
+#[inline]
+/// ### English
+/// Drives the engine once.
+///
+/// When no engine has been created yet, this returns `0`.
+///
+/// #### Returns
+/// - Number of views painted in this tick.
+///
+/// ### 中文
+/// 驱动引擎一次。
+///
+/// 当引擎尚未创建时返回 `0`。
+///
+/// #### 返回
+/// - 本次 tick 绘制的 view 数量。
+pub(crate) fn tick() -> u32 {
+    ENGINE.with(|cell| {
+        let mut binding = cell.borrow_mut();
+        let Some(engine) = binding.as_mut() else {
+            return 0;
+        };
+        engine.tick()
+    })
+}
+
+/// ### English
+/// Creates a view (initializes the engine lazily on the first call).
+///
+/// #### Parameters
+/// - `params`: View creation parameters.
+///
+/// #### Returns
+/// - `Ok(NonNull<XianWebEngineView>)` on success.
+/// - `Err(EngineInitError)` when initialization fails.
+///
+/// ### 中文
+/// 创建 view（首次调用时会惰性初始化引擎）。
+///
+/// #### 参数
+/// - `params`：view 创建参数。
+///
+/// #### 返回
+/// - 成功返回 `Ok(NonNull<XianWebEngineView>)`。
+/// - 初始化失败返回 `Err(EngineInitError)`。
+pub(crate) fn create_view(
+    params: ViewCreateParams,
+) -> Result<NonNull<XianWebEngineView>, EngineInitError> {
+    ENGINE.with(|cell| {
+        if cell.borrow().is_none() {
+            let engine = Engine::new(engine_params_from_globals()?)?;
+            *cell.borrow_mut() = Some(engine);
+        }
+
+        let mut binding = cell.borrow_mut();
+        let engine = binding.as_mut().expect("engine must be initialized above");
+        Ok(engine.create_view(params))
+    })
+}
+
+/// ### English
+/// Unregisters a view pointer from the engine if the engine exists.
+///
+/// #### Parameters
+/// - `view`: View pointer to remove.
+///
+/// ### 中文
+/// 若引擎存在，则从引擎中注销一个 view 指针。
+///
+/// #### 参数
+/// - `view`：要移除的 view 指针。
+pub(crate) fn unregister_view(view: NonNull<XianWebEngineView>) {
+    ENGINE.with(|cell| {
+        let mut binding = cell.borrow_mut();
+        let Some(engine) = binding.as_mut() else {
+            return;
+        };
+        engine.unregister_view(view);
+    });
+}
+
+/// ### English
+/// Parameters for creating an engine (captured from process-global ABI settings).
+///
+/// ### 中文
+/// 引擎创建参数（来自进程全局的 ABI 设置）。
 pub(crate) struct EngineCreateParams {
     /// ### English
     /// Pointer to embedder-owned `GLFWwindow*`.
@@ -219,12 +578,11 @@ pub(crate) struct ViewCreateParams {
 
 #[derive(Clone, Copy)]
 /// ### English
-/// ### English
-/// Engine behavior toggles (kept small for hot-path checks).
+/// Engine behavior flags (kept small for hot-path checks).
 ///
 /// ### 中文
 /// 引擎行为开关（保持精简以便热路径判断）。
-struct EngineOptions {
+struct Flags {
     /// ### English
     /// Whether to assume the embedder context is already current on the calling thread.
     ///
@@ -246,7 +604,7 @@ struct EngineOptions {
 ///
 /// ### 中文
 /// Servo 事件循环唤醒器：翻转一个共享的原子标记。
-struct PendingWaker {
+struct TickWaker {
     /// ### English
     /// `true` means the engine likely has pending work and should be ticked.
     ///
@@ -255,7 +613,7 @@ struct PendingWaker {
     tick_pending: Arc<AtomicBool>,
 }
 
-impl servo::EventLoopWaker for PendingWaker {
+impl servo::EventLoopWaker for TickWaker {
     /// ### English
     /// Clones this waker as a boxed trait object.
     ///
@@ -286,7 +644,7 @@ impl servo::EventLoopWaker for PendingWaker {
 ///
 /// ### 中文
 /// 最小化的 `RefreshDriver` 实现：存储回调并在 `begin_frame` 时执行。
-struct EngineRefreshDriver {
+struct FrameDriver {
     /// ### English
     /// Pending callbacks requested by Servo.
     ///
@@ -302,12 +660,18 @@ struct EngineRefreshDriver {
     scratch: RefCell<Vec<Box<dyn Fn() + Send + 'static>>>,
 }
 
-impl EngineRefreshDriver {
+impl FrameDriver {
     /// ### English
     /// Creates a new refresh driver.
     ///
+    /// #### Returns
+    /// - A new `FrameDriver`.
+    ///
     /// ### 中文
     /// 创建新的刷新驱动。
+    ///
+    /// #### 返回
+    /// - 新的 `FrameDriver`。
     fn new() -> Self {
         Self {
             callbacks: RefCell::new(Vec::new()),
@@ -350,7 +714,7 @@ impl EngineRefreshDriver {
     }
 }
 
-impl RefreshDriver for EngineRefreshDriver {
+impl RefreshDriver for FrameDriver {
     /// ### English
     /// Registers a callback to be run at the start of the next frame.
     ///
@@ -372,7 +736,7 @@ impl RefreshDriver for EngineRefreshDriver {
 ///
 /// ### 中文
 /// 用于跟踪 view 是否“脏”（已有新帧可用）的 `WebViewDelegate`。
-struct ViewDirtyDelegate {
+struct DirtyTracker {
     /// ### English
     /// `true` when a new frame is ready and the view should be painted.
     ///
@@ -390,17 +754,20 @@ struct ViewDirtyDelegate {
     /// 引擎持有的“dirty view 计数器”共享引用。
     ///
     /// 该计数在“从干净→变脏”时递增，在“从变脏→清理”时递减。
-    dirty_view_count: Rc<Cell<usize>>,
+    dirty_count: Rc<Cell<usize>>,
 }
 
-impl ViewDirtyDelegate {
+impl DirtyTracker {
     /// ### English
     /// Creates a new delegate marked as dirty.
     ///
     /// This increments the shared dirty-view counter.
     ///
     /// #### Parameters
-    /// - `dirty_view_count`: Shared dirty-view counter owned by the engine.
+    /// - `dirty_count`: Shared dirty-view counter owned by the engine.
+    ///
+    /// #### Returns
+    /// - A new `DirtyTracker` instance.
     ///
     /// ### 中文
     /// 创建新的 delegate（初始标记为 dirty）。
@@ -408,20 +775,31 @@ impl ViewDirtyDelegate {
     /// 该调用会递增引擎共享的 dirty-view 计数。
     ///
     /// #### 参数
-    /// - `dirty_view_count`：引擎持有的共享 dirty-view 计数器。
-    fn new(dirty_view_count: Rc<Cell<usize>>) -> Self {
-        dirty_view_count.set(dirty_view_count.get().saturating_add(1));
+    /// - `dirty_count`：引擎持有的共享 dirty-view 计数器。
+    ///
+    /// #### 返回
+    /// - 新的 `DirtyTracker` 实例。
+    fn new(dirty_count: Rc<Cell<usize>>) -> Self {
+        dirty_count.set(dirty_count.get().saturating_add(1));
         Self {
             dirty: Cell::new(true),
-            dirty_view_count,
+            dirty_count,
         }
     }
 
     /// ### English
     /// Returns whether the view needs painting.
     ///
+    /// #### Returns
+    /// - `true` when a new frame is ready and the view should be painted.
+    /// - `false` when the view is clean.
+    ///
     /// ### 中文
     /// 返回该 view 是否需要绘制。
+    ///
+    /// #### 返回
+    /// - 已有新帧可用、需要绘制时返回 `true`。
+    /// - view 干净时返回 `false`。
     fn is_dirty(&self) -> bool {
         self.dirty.get()
     }
@@ -461,9 +839,9 @@ impl ViewDirtyDelegate {
             return false;
         }
 
-        let count = self.dirty_view_count.get();
+        let count = self.dirty_count.get();
         debug_assert!(count > 0);
-        self.dirty_view_count.set(count.saturating_sub(1));
+        self.dirty_count.set(count.saturating_sub(1));
         true
     }
 
@@ -480,12 +858,12 @@ impl ViewDirtyDelegate {
         if self.dirty.replace(true) {
             return;
         }
-        self.dirty_view_count
-            .set(self.dirty_view_count.get().saturating_add(1));
+        self.dirty_count
+            .set(self.dirty_count.get().saturating_add(1));
     }
 }
 
-impl WebViewDelegate for ViewDirtyDelegate {
+impl WebViewDelegate for DirtyTracker {
     /// ### English
     /// Marks the view as dirty when Servo reports a new frame is ready.
     ///
@@ -502,19 +880,18 @@ impl WebViewDelegate for ViewDirtyDelegate {
     }
 }
 
-#[repr(C)]
 /// ### English
-/// Opaque engine handle.
+/// Thread-local engine state.
 ///
 /// ### 中文
-/// 不透明 engine 句柄。
-pub struct XianWebEngine {
+/// 线程本地的引擎状态。
+struct Engine {
     /// ### English
-    /// Engine options captured at creation time.
+    /// Engine flags captured at creation time.
     ///
     /// ### 中文
-    /// 创建时确定的引擎选项。
-    options: EngineOptions,
+    /// 创建时确定的引擎开关。
+    flags: Flags,
 
     /// ### English
     /// Flag flipped by Servo's waker; used by `needs_tick`.
@@ -528,7 +905,7 @@ pub struct XianWebEngine {
     ///
     /// ### 中文
     /// Servo 用于调度帧回调的刷新驱动。
-    refresh_driver: Rc<EngineRefreshDriver>,
+    frame_driver: Rc<FrameDriver>,
 
     /// ### English
     /// Embedder GLFW proc table (copied into each view context).
@@ -542,7 +919,7 @@ pub struct XianWebEngine {
     ///
     /// ### 中文
     /// 共享 OpenGL API 句柄。
-    gl: GlShared,
+    gl: GlHandles,
 
     /// ### English
     /// Servo instance (driven by `tick`).
@@ -561,17 +938,17 @@ pub struct XianWebEngine {
     /// ### English
     /// Number of views currently marked as dirty (has a frame ready).
     ///
-    /// This is updated by each `ViewDirtyDelegate` so `needs_tick` can stay O(1) when `auto_paint`
+    /// This is updated by each `DirtyTracker` so `needs_tick` can stay O(1) when `auto_paint`
     /// is enabled.
     ///
     /// ### 中文
     /// 当前被标记为 dirty（已生成新帧）的 view 数量。
     ///
-    /// 该计数由每个 `ViewDirtyDelegate` 维护，使得在开启 `auto_paint` 时 `needs_tick` 保持 O(1)。
-    dirty_view_count: Rc<Cell<usize>>,
+    /// 该计数由每个 `DirtyTracker` 维护，使得在开启 `auto_paint` 时 `needs_tick` 保持 O(1)。
+    dirty_count: Rc<Cell<usize>>,
 }
 
-impl XianWebEngine {
+impl Engine {
     /// ### English
     /// Creates a new engine instance.
     ///
@@ -579,7 +956,7 @@ impl XianWebEngine {
     /// - `params`: Parsed creation parameters.
     ///
     /// #### Returns
-    /// - `Ok(XianWebEngine)` on success.
+    /// - `Ok(Engine)` on success.
     /// - `Err(EngineInitError)` on initialization failure.
     ///
     /// ### 中文
@@ -589,7 +966,7 @@ impl XianWebEngine {
     /// - `params`：已解析的创建参数。
     ///
     /// #### 返回
-    /// - 成功返回 `Ok(XianWebEngine)`。
+    /// - 成功返回 `Ok(Engine)`。
     /// - 初始化失败返回 `Err(EngineInitError)`。
     pub(crate) fn new(params: EngineCreateParams) -> Result<Self, EngineInitError> {
         RUSTLS_PROVIDER_INIT.call_once(|| {
@@ -612,7 +989,7 @@ impl XianWebEngine {
             let _ = std::fs::create_dir_all(config_dir);
         }
 
-        let options = EngineOptions {
+        let flags = Flags {
             assume_context_current: params.assume_context_current,
             auto_paint: params.auto_paint,
         };
@@ -622,14 +999,14 @@ impl XianWebEngine {
                 params.glfw_window,
                 params.glfw_get_proc_address,
                 params.glfw_make_context_current,
-                options.assume_context_current,
+                flags.assume_context_current,
             )?
         };
 
         unsafe { glfw.make_current()? };
 
         let gl_api = GlApi::from_u32(params.gl_api)?;
-        let gl = unsafe { GlShared::new(gl_api, &glfw)? };
+        let gl = unsafe { GlHandles::new(gl_api, &glfw)? };
 
         let cpu_threads = std::thread::available_parallelism()
             .map(|n| n.get() as i64)
@@ -673,11 +1050,11 @@ impl XianWebEngine {
         };
 
         let tick_pending = Arc::new(AtomicBool::new(true));
-        let waker: Box<dyn servo::EventLoopWaker> = Box::new(PendingWaker {
+        let waker: Box<dyn servo::EventLoopWaker> = Box::new(TickWaker {
             tick_pending: tick_pending.clone(),
         });
 
-        let refresh_driver = Rc::new(EngineRefreshDriver::new());
+        let frame_driver = Rc::new(FrameDriver::new());
 
         if SERVO_INITIALIZED
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -693,14 +1070,14 @@ impl XianWebEngine {
             .build();
 
         Ok(Self {
-            options,
+            flags,
             tick_pending,
-            refresh_driver,
+            frame_driver,
             glfw,
             gl,
             servo,
             views: Vec::new(),
-            dirty_view_count: Rc::new(Cell::new(0)),
+            dirty_count: Rc::new(Cell::new(0)),
         })
     }
 
@@ -722,7 +1099,7 @@ impl XianWebEngine {
             return true;
         }
 
-        if self.options.auto_paint && self.dirty_view_count.get() != 0 {
+        if self.flags.auto_paint && self.dirty_count.get() != 0 {
             return true;
         }
 
@@ -746,10 +1123,14 @@ impl XianWebEngine {
     /// - 本次 tick 绘制的 view 数量。
     pub(crate) fn tick(&mut self) -> u32 {
         self.tick_pending.store(false, Ordering::Relaxed);
-        self.refresh_driver.begin_frame();
+        self.frame_driver.begin_frame();
         self.servo.spin_event_loop();
 
-        if !self.options.auto_paint {
+        if !self.flags.auto_paint {
+            return 0;
+        }
+
+        if self.dirty_count.get() == 0 {
             return 0;
         }
 
@@ -783,17 +1164,17 @@ impl XianWebEngine {
     pub(crate) fn create_view(&mut self, params: ViewCreateParams) -> NonNull<XianWebEngineView> {
         let size = PhysicalSize::new(params.width.max(1), params.height.max(1));
 
-        let rendering_context = Rc::new(GlfwTextureContext::new(
+        let rendering_context = Rc::new(TextureContext::new(
             self.glfw,
             self.gl.clone(),
             size,
-            Some(self.refresh_driver.clone() as Rc<dyn RefreshDriver>),
+            Some(self.frame_driver.clone() as Rc<dyn RefreshDriver>),
         ));
 
-        let delegate = Rc::new(ViewDirtyDelegate::new(Rc::clone(&self.dirty_view_count)));
+        let dirty_tracker = Rc::new(DirtyTracker::new(Rc::clone(&self.dirty_count)));
 
         let webview = WebViewBuilder::new(&self.servo, rendering_context.clone())
-            .delegate(delegate.clone())
+            .delegate(dirty_tracker.clone())
             .build();
 
         webview.show();
@@ -802,31 +1183,15 @@ impl XianWebEngine {
             webview.load(url);
         }
 
-        let engine_ptr = NonNull::from(&mut *self);
-
         let view = Box::new(XianWebEngineView {
-            engine: Cell::new(Some(engine_ptr)),
             webview,
             rendering_context,
-            delegate,
+            dirty_tracker,
         });
 
         let ptr = NonNull::from(Box::leak(view));
         self.views.push(ptr);
         ptr
-    }
-
-    /// ### English
-    /// Detaches all views from this engine (used before engine destruction).
-    ///
-    /// ### 中文
-    /// 将所有 view 与该引擎解绑（用于引擎销毁前）。
-    pub(crate) fn detach_all_views(&mut self) {
-        for &ptr in &self.views {
-            let view = unsafe { ptr.as_ref() };
-            view.engine.set(None);
-        }
-        self.views.clear();
     }
 
     /// ### English
@@ -849,23 +1214,30 @@ impl XianWebEngine {
 
 #[repr(C)]
 /// ### English
-/// Opaque view handle.
+/// Opaque view handle returned by the C ABI.
+///
+/// #### Threading
+/// - Must be used on the same thread that owns the embedder GLFW OpenGL context.
+///
+/// #### Ownership
+/// - Created by `xian_web_engine_view_create`.
+/// - Destroyed by `xian_web_engine_view_destroy`.
 ///
 /// ### 中文
-/// 不透明 view 句柄。
+/// C ABI 返回的“不透明”view 句柄。
+///
+/// #### 线程
+/// - 必须在拥有宿主 GLFW OpenGL 上下文的同一线程使用。
+///
+/// #### 所有权
+/// - 由 `xian_web_engine_view_create` 创建。
+/// - 由 `xian_web_engine_view_destroy` 销毁。
 pub struct XianWebEngineView {
     /// ### English
-    /// Optional back-pointer to the owning engine (cleared when detached).
+    /// Servo `WebView` instance.
     ///
     /// ### 中文
-    /// 指向所属引擎的可选反向指针（解绑时会清空）。
-    engine: Cell<Option<NonNull<XianWebEngine>>>,
-
-    /// ### English
-    /// Servo WebView instance.
-    ///
-    /// ### 中文
-    /// Servo WebView 实例。
+    /// Servo `WebView` 实例。
     webview: WebView,
 
     /// ### English
@@ -873,14 +1245,14 @@ pub struct XianWebEngineView {
     ///
     /// ### 中文
     /// 持有该 view 离屏纹理的渲染上下文。
-    rendering_context: Rc<GlfwTextureContext>,
+    rendering_context: Rc<TextureContext>,
 
     /// ### English
     /// Dirty-tracking delegate.
     ///
     /// ### 中文
     /// 用于 dirty 跟踪的 delegate。
-    delegate: Rc<ViewDirtyDelegate>,
+    dirty_tracker: Rc<DirtyTracker>,
 }
 
 impl XianWebEngineView {
@@ -900,15 +1272,11 @@ impl XianWebEngineView {
     /// #### 参数
     /// - `view`：要销毁的装箱 view。
     pub(crate) fn destroy_boxed(mut view: Box<Self>) {
-        view.delegate.clear();
+        view.dirty_tracker.clear();
 
         let view_ptr = NonNull::new(view.as_mut() as *mut XianWebEngineView)
             .expect("NonNull from Box is guaranteed");
-
-        if let Some(mut engine) = view.engine.get() {
-            unsafe { engine.as_mut() }.unregister_view(view_ptr);
-        }
-        view.engine.set(None);
+        unregister_view(view_ptr);
     }
 
     /// ### English
@@ -957,8 +1325,14 @@ impl XianWebEngineView {
     /// ### English
     /// Returns the OpenGL texture id of this view.
     ///
+    /// #### Returns
+    /// - OpenGL texture id.
+    ///
     /// ### 中文
     /// 返回该 view 的 OpenGL 纹理 id。
+    ///
+    /// #### 返回
+    /// - OpenGL 纹理 id。
     pub(crate) fn texture_id(&self) -> u32 {
         self.rendering_context.texture_id()
     }
@@ -966,10 +1340,18 @@ impl XianWebEngineView {
     /// ### English
     /// Returns whether this view needs painting.
     ///
+    /// #### Returns
+    /// - `true` when a new frame is ready and the view should be painted.
+    /// - `false` when the view is clean.
+    ///
     /// ### 中文
     /// 返回该 view 是否需要绘制。
+    ///
+    /// #### 返回
+    /// - 已有新帧可用、需要绘制时返回 `true`。
+    /// - view 干净时返回 `false`。
     pub(crate) fn needs_paint(&self) -> bool {
-        self.delegate.is_dirty()
+        self.dirty_tracker.is_dirty()
     }
 
     /// ### English
@@ -986,7 +1368,7 @@ impl XianWebEngineView {
     /// - 确实执行了绘制则返回 `true`。
     /// - view 非 dirty 则返回 `false`。
     pub(crate) fn paint(&self) -> bool {
-        if !self.delegate.take_dirty() {
+        if !self.dirty_tracker.take_dirty() {
             return false;
         }
 

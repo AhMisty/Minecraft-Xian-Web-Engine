@@ -61,8 +61,8 @@ impl GlApi {
     /// - 不支持时返回 `Err(EngineInitError)`。
     pub(crate) fn from_u32(value: u32) -> Result<Self, EngineInitError> {
         match value {
-            crate::abi::XIAN_WEB_ENGINE_GL_API_GL => Ok(Self::Gl),
-            crate::abi::XIAN_WEB_ENGINE_GL_API_GLES => Ok(Self::Gles),
+            crate::ffi::XIAN_WEB_ENGINE_GL_API_GL => Ok(Self::Gl),
+            crate::ffi::XIAN_WEB_ENGINE_GL_API_GLES => Ok(Self::Gles),
             _ => Err(EngineInitError::UnsupportedGlApi { value }),
         }
     }
@@ -88,7 +88,6 @@ type GlfwMakeContextCurrentFn = unsafe extern "C" fn(*mut c_void);
 ///
 /// #### Parameters
 /// - `addr`: Function pointer address (`0` means "NULL").
-/// - `name`: Symbol name (for debugging).
 ///
 /// #### Returns
 /// - `Some(T)` when `addr != 0`.
@@ -122,6 +121,7 @@ unsafe fn addr_to_fn<T>(addr: usize) -> Option<T> {
 ///
 /// #### Parameters
 /// - `addr`: Function pointer address (`0` means "NULL").
+/// - `name`: Symbol name (for debugging).
 ///
 /// #### Returns
 /// - `Ok(T)` when `addr != 0`.
@@ -287,10 +287,20 @@ impl GlfwContext {
     /// #### 返回
     /// - 原始函数指针地址（不可用时为 NULL）。
     fn load(&self, name: &str) -> *const c_void {
-        let Ok(name) = CString::new(name) else {
-            return std::ptr::null();
-        };
-        unsafe { (self.get_proc_address)(name.as_ptr()) }
+        let bytes = name.as_bytes();
+        debug_assert!(!bytes.contains(&0));
+
+        const STACK_BUF_CAP: usize = 128;
+        if bytes.len() + 1 <= STACK_BUF_CAP {
+            let mut buf = [0u8; STACK_BUF_CAP];
+            buf[..bytes.len()].copy_from_slice(bytes);
+            unsafe { (self.get_proc_address)(buf.as_ptr().cast()) }
+        } else {
+            let Ok(name) = CString::new(name) else {
+                return std::ptr::null();
+            };
+            unsafe { (self.get_proc_address)(name.as_ptr()) }
+        }
     }
 }
 
@@ -300,7 +310,7 @@ impl GlfwContext {
 ///
 /// ### 中文
 /// Servo 使用的共享 OpenGL API 句柄。
-pub(crate) struct GlShared {
+pub(crate) struct GlHandles {
     /// ### English
     /// Gleam GL wrapper (used by Servo and Surfman integration).
     ///
@@ -316,7 +326,7 @@ pub(crate) struct GlShared {
     glow_gl: Arc<glow::Context>,
 }
 
-impl GlShared {
+impl GlHandles {
     /// ### English
     /// Loads OpenGL function pointers into both Gleam and Glow contexts.
     ///
@@ -325,7 +335,7 @@ impl GlShared {
     /// - `glfw`: GLFW proc table used for function lookup.
     ///
     /// #### Returns
-    /// - `Ok(GlShared)` when loading succeeded.
+    /// - `Ok(GlHandles)` when loading succeeded.
     /// - `Err(EngineInitError)` on missing required entry points.
     ///
     /// #### Safety
@@ -339,7 +349,7 @@ impl GlShared {
     /// - `glfw`：用于函数查找的 GLFW 函数表。
     ///
     /// #### 返回
-    /// - 加载成功返回 `Ok(GlShared)`。
+    /// - 加载成功返回 `Ok(GlHandles)`。
     /// - 缺少必需入口时返回 `Err(EngineInitError)`。
     ///
     /// #### 安全性
@@ -681,7 +691,7 @@ impl Drop for Framebuffer {
 /// 基于宿主提供的 GLFW OpenGL 上下文与离屏帧缓冲纹理的 Servo `RenderingContext`。
 ///
 /// 每个实例持有一套 FBO + RGBA 纹理，并支持 resize。
-pub(crate) struct GlfwTextureContext {
+pub(crate) struct TextureContext {
     /// ### English
     /// GLFW proc table used for making context current and loading functions.
     ///
@@ -725,7 +735,7 @@ pub(crate) struct GlfwTextureContext {
     refresh_driver: Option<Rc<dyn servo::RefreshDriver>>,
 }
 
-impl GlfwTextureContext {
+impl TextureContext {
     /// ### English
     /// Creates a new texture-backed rendering context.
     ///
@@ -735,6 +745,9 @@ impl GlfwTextureContext {
     /// - `size`: Initial size (clamped by caller to >= 1).
     /// - `refresh_driver`: Optional refresh driver for frame scheduling.
     ///
+    /// #### Returns
+    /// - A new `TextureContext` instance.
+    ///
     /// ### 中文
     /// 创建一个基于纹理的渲染上下文。
     ///
@@ -743,9 +756,12 @@ impl GlfwTextureContext {
     /// - `gl`：共享 GL API 句柄。
     /// - `size`：初始尺寸（调用方需保证 >= 1）。
     /// - `refresh_driver`：可选刷新驱动，用于帧调度。
+    ///
+    /// #### 返回
+    /// - 新的 `TextureContext` 实例。
     pub(crate) fn new(
         glfw: GlfwContext,
-        gl: GlShared,
+        gl: GlHandles,
         size: PhysicalSize<u32>,
         refresh_driver: Option<Rc<dyn servo::RefreshDriver>>,
     ) -> Self {
@@ -763,14 +779,20 @@ impl GlfwTextureContext {
     /// ### English
     /// Returns the OpenGL texture id of the color attachment.
     ///
+    /// #### Returns
+    /// - OpenGL texture id.
+    ///
     /// ### 中文
     /// 返回颜色附件的 OpenGL 纹理 id。
+    ///
+    /// #### 返回
+    /// - OpenGL 纹理 id。
     pub(crate) fn texture_id(&self) -> u32 {
         self.framebuffer.borrow().texture_id
     }
 }
 
-impl servo::RenderingContext for GlfwTextureContext {
+impl servo::RenderingContext for TextureContext {
     /// ### English
     /// Prepares the current frame for rendering.
     ///

@@ -4,7 +4,7 @@
 
 `xian_web_engine` 输出一个 `cdylib`（库名：`xian_web_engine`），对外只暴露 C ABI。
 
-C ABI 版本：`1`（`xian_web_engine_abi_version()`）。
+C ABI 版本：`2`（`xian_web_engine_abi_version()`）。
 
 本版本已“完全重写”工作模型：
 
@@ -17,17 +17,18 @@ C ABI 版本：`1`（`xian_web_engine_abi_version()`）。
 
 ## TL;DR（最小调用顺序）
 
-1. 初始化配置：`xian_web_engine_config_init(&cfg)`
-2. （可选）安装 Servo 内置资源目录：`xian_web_engine_set_resources_dir("...")`（应用启动时调用一次）
-3. （可选）设置 Servo 配置目录：`xian_web_engine_set_config_dir("...")`（创建 engine 之前调用）
-4. （可选）设置 Servo 工作线程上限：`xian_web_engine_set_thread_pool_cap(n)`（创建 engine 之前调用）
-5. 填 `cfg.glfw_window` + `cfg.glfw_api.glfw_get_proc_address`（可选 `glfw_make_context_current`）
-6. 创建引擎：`engine = xian_web_engine_create(&cfg)`
-7. 创建 view：`xian_web_engine_view_config_init(&vcfg)` -> `vcfg.engine = engine` -> `view = xian_web_engine_view_create(&vcfg)`
-8. 每帧调用：`xian_web_engine_tick(engine)`（同一线程；且 `cfg.glfw_window` 的上下文已 current）
-9. 获取纹理：`tex = xian_web_engine_view_texture_id(view)` 并在宿主渲染
-10. 输入事件：`xian_web_engine_view_send_input_events(view, events, count)`
-11. 释放：先 `xian_web_engine_view_destroy(view)`，再 `xian_web_engine_destroy(engine)`
+1. （可选）安装 Servo 内置资源目录：`xian_web_engine_set_resources_dir("...")`（应用启动时调用一次）
+2. （可选）设置 Servo 配置目录：`xian_web_engine_set_config_dir("...")`（创建首个 view 之前调用）
+3. （可选）设置 Servo 工作线程上限：`xian_web_engine_set_thread_pool_cap(n)`（创建首个 view 之前调用）
+4. 设置 GLFW 上下文 + proc：`xian_web_engine_set_glfw_context(glfw_window, glfw_api)`
+5. （可选）设置 OpenGL API：`xian_web_engine_set_gl_api(XIAN_WEB_ENGINE_GL_API_GL / XIAN_WEB_ENGINE_GL_API_GLES)`
+6. （可选）设置 assume-current：`xian_web_engine_set_assume_context_current(0/1)`
+7. （可选）设置 AUTO_PAINT：`xian_web_engine_set_auto_paint(0/1)`
+8. 创建 view：`xian_web_engine_view_config_init(&vcfg)` -> `view = xian_web_engine_view_create(&vcfg)`
+9. 每帧调用：`xian_web_engine_tick()`（同一线程；且 `glfw_window` 的上下文已 current）
+10. 获取纹理：`tex = xian_web_engine_view_texture_id(view)` 并在宿主渲染
+11. 输入事件：`xian_web_engine_view_send_input_events(view, events, count)`
+12. 释放：`xian_web_engine_view_destroy(view)`
 
 ---
 
@@ -35,15 +36,15 @@ C ABI 版本：`1`（`xian_web_engine_abi_version()`）。
 
 ### 1) 线程与上下文
 
-- **所有 API 必须在同一线程调用**；不得跨线程使用 `XianWebEngine* / XianWebEngineView*`
-- 调用前必须保证 `cfg.glfw_window` 的 OpenGL 上下文已经 **current**
-  - 默认 `cfg.assume_context_current = 1`：引擎不会调用 `glfwMakeContextCurrent`（最高性能）
-  - 若你希望库内部显式调用 `glfwMakeContextCurrent`：设置 `cfg.assume_context_current = 0`，并提供 `glfw_make_context_current` 指针
+- **所有 API 必须在同一线程调用**；不得跨线程使用 `XianWebEngineView*`
+- 调用前必须保证通过 `xian_web_engine_set_glfw_context(...)` 传入的 `glfw_window` 的 OpenGL 上下文已经 **current**
+  - 默认 `xian_web_engine_set_assume_context_current(1)`：库不会调用 `glfwMakeContextCurrent`（最高性能）
+  - 若你希望库内部显式调用 `glfwMakeContextCurrent`：先 `xian_web_engine_set_assume_context_current(0)`，并在 `xian_web_engine_set_glfw_context` 中提供 `glfw_make_context_current` 指针
 
 ### 2) 自动绘制（AUTO_PAINT）
 
-- 默认 `cfg.auto_paint = 1`
-- 启用时：`xian_web_engine_tick` 会在 `Servo::spin_event_loop` 后自动绘制所有 dirty view
+- 默认 `xian_web_engine_set_auto_paint(1)`
+- 启用时：`xian_web_engine_tick()` 会在 `Servo::spin_event_loop` 后自动绘制所有 dirty view
 - 你也可以用：
   - `xian_web_engine_view_needs_paint(view)` 查询
   - `xian_web_engine_view_paint(view)` 手动触发绘制
@@ -55,8 +56,8 @@ C ABI 版本：`1`（`xian_web_engine_abi_version()`）。
 
 ### 4) 配置作用域
 
-- `xian_web_engine_set_resources_dir`：进程全局（建议在创建 engine 前调用）
-- `xian_web_engine_set_config_dir / xian_web_engine_set_thread_pool_cap`：进程全局（必须在创建 engine 前调用；Servo 初始化后不可再改）
+- `xian_web_engine_set_resources_dir`：进程全局（建议在创建首个 view 前调用）
+- `xian_web_engine_set_config_dir / xian_web_engine_set_thread_pool_cap / xian_web_engine_set_glfw_context / xian_web_engine_set_gl_api / xian_web_engine_set_assume_context_current / xian_web_engine_set_auto_paint`：进程全局（必须在创建首个 view 前调用；Servo 初始化后不可再改）
 
 ---
 
@@ -71,12 +72,11 @@ C ABI 版本：`1`（`xian_web_engine_abi_version()`）。
 extern "C" {
 #endif
 
-typedef struct XianWebEngine XianWebEngine;
 typedef struct XianWebEngineView XianWebEngineView;
 
 // --- constants ---
 
-#define XIAN_WEB_ENGINE_ABI_VERSION 1u
+#define XIAN_WEB_ENGINE_ABI_VERSION 2u
 
 #define XIAN_WEB_ENGINE_GL_API_GL   1u
 #define XIAN_WEB_ENGINE_GL_API_GLES 2u
@@ -98,17 +98,7 @@ typedef struct XianWebEngineGlfwApi {
   uintptr_t glfw_make_context_current; // optional (required if assume_context_current is 0)
 } XianWebEngineGlfwApi;
 
-typedef struct XianWebEngineConfig {
-  void* glfw_window; // GLFWwindow* (required)
-  XianWebEngineGlfwApi glfw_api;
-  uint32_t gl_api;   // XIAN_WEB_ENGINE_GL_API_*
-  uint32_t assume_context_current; // bool (0/1), default 1
-  uint32_t auto_paint;             // bool (0/1), default 1
-  uint32_t _reserved0;             // must be 0
-} XianWebEngineConfig;
-
 typedef struct XianWebEngineViewConfig {
-  XianWebEngine* engine; // required
   uint32_t width;
   uint32_t height;
   float hidpi_scale_factor; // currently ignored (reserved)
@@ -141,15 +131,17 @@ typedef struct XianWebEngineInputEvent {
 
 uint32_t xian_web_engine_abi_version(void);
 
-void xian_web_engine_config_init(XianWebEngineConfig* cfg);
 bool xian_web_engine_set_resources_dir(const char* resources_dir);
 bool xian_web_engine_set_config_dir(const char* config_dir);
 bool xian_web_engine_set_thread_pool_cap(uint32_t thread_pool_cap);
-XianWebEngine* xian_web_engine_create(const XianWebEngineConfig* cfg);
-void xian_web_engine_destroy(XianWebEngine* engine);
 
-bool xian_web_engine_needs_tick(const XianWebEngine* engine);
-uint32_t xian_web_engine_tick(XianWebEngine* engine);
+bool xian_web_engine_set_glfw_context(void* glfw_window, XianWebEngineGlfwApi glfw_api);
+bool xian_web_engine_set_gl_api(uint32_t gl_api);
+bool xian_web_engine_set_assume_context_current(uint32_t assume_context_current);
+bool xian_web_engine_set_auto_paint(uint32_t auto_paint);
+
+bool xian_web_engine_needs_tick(void);
+uint32_t xian_web_engine_tick(void);
 
 void xian_web_engine_view_config_init(XianWebEngineViewConfig* cfg);
 XianWebEngineView* xian_web_engine_view_create(const XianWebEngineViewConfig* cfg);
@@ -178,7 +170,7 @@ uint32_t xian_web_engine_view_send_input_events(
 
 `xian_web_engine` builds a `cdylib` (library name: `xian_web_engine`) and exposes a pure C ABI.
 
-C ABI version: `1` (`xian_web_engine_abi_version()`).
+C ABI version: `2` (`xian_web_engine_abi_version()`).
 
 This version is a full rewrite with a new high-performance model:
 
