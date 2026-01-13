@@ -35,7 +35,7 @@ use crate::input::XianWebEngineInputEvent;
 ///
 /// ### 中文
 /// C ABI 版本号。
-const XIAN_WEB_ENGINE_ABI_VERSION: u32 = 2;
+const XIAN_WEB_ENGINE_ABI_VERSION: u32 = 1;
 
 /// ### English
 /// OpenGL API kind (desktop OpenGL).
