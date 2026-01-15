@@ -1,25 +1,24 @@
 //! ### English
 //! High-performance Servo embedder (`cdylib`).
 //!
-//! - The embedder provides an external GLFW OpenGL context (usually the game's context).
-//! - Servo renders directly in that context into per-view textures owned by this crate.
+//! #### Model
+//! - The embedder provides one GLFW OpenGL context.
+//! - Servo renders into per-view OpenGL textures created in that context.
 //!
-//! #### Design goals
-//! - No shared/offscreen GLFW windows
-//! - No cross-thread context sharing/copying
-//! - Single-threaded public API (minimal synchronization)
+//! #### Threading
+//! - All API calls must happen on the thread where the context is current.
 //!
 //! ### 中文
 //! 高性能 Servo 嵌入层（`cdylib`）。
 //!
-//! - 宿主提供外部 GLFW OpenGL 上下文（通常为游戏的上下文）。
-//! - Servo 直接在该上下文内渲染到本库持有的每个 view 纹理。
+//! #### 模型
+//! - 宿主提供一个 GLFW OpenGL 上下文。
+//! - Servo 在该上下文内渲染到每个 view 独立的 OpenGL 纹理。
 //!
-//! #### 设计目标
-//! - 不创建共享/离屏 GLFW window
-//! - 不进行跨线程上下文共享/拷贝
-//! - 对外 API 单线程（最小化同步开销）
+//! #### 线程
+//! - 所有 API 调用必须发生在“上下文为 current”的同一线程。
 
+mod abi;
 mod engine;
 mod error;
 mod ffi;

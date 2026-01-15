@@ -1,66 +1,66 @@
 //! ### English
 //! Internal error types.
 //!
-//! This crate primarily exposes a C ABI and typically maps failures to NULL/false on the boundary.
-//! Internally we still keep small, allocation-free error values to make control flow explicit while
-//! staying performance-friendly.
+//! This crate primarily exposes a C ABI. At the ABI boundary, failures are mapped to
+//! `NULL` / `false` / `0`. Internally we keep small, allocation-free error values so control flow
+//! stays explicit without adding overhead.
 //!
 //! ### 中文
 //! 内部错误类型。
 //!
-//! 本库主要对外暴露 C ABI，边界处通常将失败映射为 NULL/false。
-//! 但在内部依然使用“零分配、体积小”的错误值，让控制流更清晰，同时保持性能友好。
+//! 本库主要对外暴露 C ABI；在 ABI 边界通常把失败映射为 `NULL` / `false` / `0`。
+//! 内部保留“体积小、零分配”的错误值，用于清晰表达控制流，同时不引入额外开销。
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// ### English
-/// Engine initialization error.
+/// Initialization error.
 ///
-/// This type is:
-/// - Allocation-free (`Copy`)
-/// - FFI-friendly (can be ignored or logged by the caller)
+/// #### Notes
+/// - Allocation-free (`Copy`).
+/// - Intended for internal control flow and optional logging.
 ///
 /// ### 中文
-/// 引擎初始化错误。
+/// 初始化错误。
 ///
-/// 该类型具备：
-/// - 零分配（可 `Copy`）
-/// - 适合 FFI（调用方可选择忽略或记录）
-pub(crate) enum EngineInitError {
+/// #### 说明
+/// - 零分配（`Copy`）。
+/// - 用于内部控制流；如有需要可记录日志后在 ABI 边界映射为 `false`/`NULL`。
+pub(crate) enum InitError {
     /// ### English
-    /// Servo has already been initialized in this process.
+    /// Servo has already been initialized in this process (re-initialization is not supported).
     ///
     /// ### 中文
-    /// Servo 已在本进程中初始化过（不支持重复初始化）。
+    /// Servo 已在本进程中初始化（不支持重复初始化）。
     ServoAlreadyInitialized,
 
     /// ### English
-    /// Unsupported OpenGL API selector value from the C ABI.
+    /// Unsupported OpenGL API selector from the C ABI.
     ///
     /// #### Fields
-    /// - `value`: Raw `gl_api` value from the ABI.
+    /// - `value`: Raw selector value.
     ///
     /// ### 中文
     /// 不支持的 OpenGL API 选择值（来自 C ABI）。
     ///
     /// #### 字段
-    /// - `value`：ABI 传入的原始 `gl_api` 值。
+    /// - `value`：ABI 传入的原始选择值。
     UnsupportedGlApi { value: u32 },
 
     /// ### English
-    /// A required embedder-provided function pointer was NULL.
+    /// A required embedder-provided pointer is NULL.
     ///
     /// #### Fields
-    /// - `name`: Symbol name (for debugging).
+    /// - `name`: Symbol name for diagnostics.
     ///
     /// ### 中文
-    /// 宿主提供的必需函数指针为 NULL。
+    /// 宿主提供的必需指针为 NULL。
     ///
     /// #### 字段
-    /// - `name`：符号名（用于调试定位）。
-    NullFunctionPointer { name: &'static str },
+    /// - `name`：符号名（用于诊断定位）。
+    NullPointer { name: &'static str },
 
     /// ### English
-    /// A required OpenGL entry point could not be loaded.
+    /// A required OpenGL entry point cannot be loaded.
     ///
     /// #### Fields
     /// - `name`: Entry point name.

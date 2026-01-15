@@ -14,9 +14,10 @@ use std::sync::{Arc, Once, RwLock};
 use dpi::PhysicalSize;
 use servo::{RefreshDriver, WebView, WebViewBuilder, WebViewDelegate};
 
-use crate::error::EngineInitError;
+use crate::abi::XianWebEngineInputEvent;
+use crate::error::InitError;
 use crate::gl::{GlApi, GlHandles, GlfwContext, TextureContext};
-use crate::input::{XianWebEngineInputEvent, map_input_event};
+use crate::input::map_input_event;
 
 /// ### English
 /// One-time initialization for rustls crypto provider installation.
@@ -54,11 +55,11 @@ static GLFW_GET_PROC_ADDRESS: AtomicUsize = AtomicUsize::new(0);
 static GLFW_MAKE_CONTEXT_CURRENT: AtomicUsize = AtomicUsize::new(0);
 
 /// ### English
-/// Process-global OpenGL API selector (`crate::ffi::XIAN_WEB_ENGINE_GL_API_*`).
+/// Process-global OpenGL API selector (`crate::abi::XIAN_WEB_ENGINE_GL_API_*`).
 ///
 /// ### 中文
-/// 进程全局的 OpenGL API 选择值（`crate::ffi::XIAN_WEB_ENGINE_GL_API_*`）。
-static GL_API: AtomicU32 = AtomicU32::new(crate::ffi::XIAN_WEB_ENGINE_GL_API_GL);
+/// 进程全局的 OpenGL API 选择值（`crate::abi::XIAN_WEB_ENGINE_GL_API_*`）。
+static GL_API: AtomicU32 = AtomicU32::new(crate::abi::XIAN_WEB_ENGINE_GL_API_GL);
 
 /// ### English
 /// Process-global "assume current context" toggle (captured on init).
@@ -150,7 +151,7 @@ pub(crate) fn set_glfw_context(
 
 #[inline]
 /// ### English
-/// Sets the process-global OpenGL API selector (`crate::ffi::XIAN_WEB_ENGINE_GL_API_*`).
+/// Sets the process-global OpenGL API selector (`crate::abi::XIAN_WEB_ENGINE_GL_API_*`).
 ///
 /// This must be called before Servo is initialized.
 ///
@@ -162,7 +163,7 @@ pub(crate) fn set_glfw_context(
 /// - `false` if Servo is already initialized.
 ///
 /// ### 中文
-/// 设置进程全局的 OpenGL API 选择值（`crate::ffi::XIAN_WEB_ENGINE_GL_API_*`）。
+/// 设置进程全局的 OpenGL API 选择值（`crate::abi::XIAN_WEB_ENGINE_GL_API_*`）。
 ///
 /// 必须在 Servo 初始化之前调用。
 ///
@@ -349,38 +350,38 @@ thread_local! {
     ///
     /// ### 中文
     /// 线程本地的引擎实例（由 `create_view` 惰性创建）。
-    static ENGINE: RefCell<Option<Engine>> = RefCell::new(None);
+    static ENGINE: RefCell<Option<Engine>> = const { RefCell::new(None) };
 }
 
 #[inline]
 /// ### English
-/// Builds `EngineCreateParams` from process-global settings.
+/// Builds `EngineParams` from process-global settings.
 ///
 /// #### Returns
-/// - `Ok(EngineCreateParams)` when required values are present.
-/// - `Err(EngineInitError)` when required pointers are missing.
+/// - `Ok(EngineParams)` when required values are present.
+/// - `Err(InitError)` when required pointers are missing.
 ///
 /// ### 中文
-/// 从进程全局设置构建 `EngineCreateParams`。
+/// 从进程全局设置构建 `EngineParams`。
 ///
 /// #### 返回
-/// - 必需值齐全时返回 `Ok(EngineCreateParams)`。
-/// - 必需指针缺失时返回 `Err(EngineInitError)`。
-fn engine_params_from_globals() -> Result<EngineCreateParams, EngineInitError> {
+/// - 必需值齐全时返回 `Ok(EngineParams)`。
+/// - 必需指针缺失时返回 `Err(InitError)`。
+fn engine_params_from_globals() -> Result<EngineParams, InitError> {
     let glfw_window = GLFW_WINDOW.load(Ordering::Relaxed) as *mut std::ffi::c_void;
     if glfw_window.is_null() {
-        return Err(EngineInitError::NullFunctionPointer {
+        return Err(InitError::NullPointer {
             name: "glfw_window",
         });
     }
     let glfw_get_proc_address = GLFW_GET_PROC_ADDRESS.load(Ordering::Relaxed);
     if glfw_get_proc_address == 0 {
-        return Err(EngineInitError::NullFunctionPointer {
+        return Err(InitError::NullPointer {
             name: "glfwGetProcAddress",
         });
     }
 
-    Ok(EngineCreateParams {
+    Ok(EngineParams {
         glfw_window,
         glfw_get_proc_address,
         glfw_make_context_current: GLFW_MAKE_CONTEXT_CURRENT.load(Ordering::Relaxed),
@@ -410,8 +411,8 @@ fn engine_params_from_globals() -> Result<EngineCreateParams, EngineInitError> {
 /// - 看起来空闲或尚未创建时返回 `false`。
 pub(crate) fn needs_tick() -> bool {
     ENGINE.with(|cell| {
-        let binding = cell.borrow();
-        let Some(engine) = binding.as_ref() else {
+        let engine_slot = cell.borrow();
+        let Some(engine) = engine_slot.as_ref() else {
             return false;
         };
         engine.needs_tick()
@@ -436,8 +437,8 @@ pub(crate) fn needs_tick() -> bool {
 /// - 本次 tick 绘制的 view 数量。
 pub(crate) fn tick() -> u32 {
     ENGINE.with(|cell| {
-        let mut binding = cell.borrow_mut();
-        let Some(engine) = binding.as_mut() else {
+        let mut engine_slot = cell.borrow_mut();
+        let Some(engine) = engine_slot.as_mut() else {
             return 0;
         };
         engine.tick()
@@ -452,7 +453,7 @@ pub(crate) fn tick() -> u32 {
 ///
 /// #### Returns
 /// - `Ok(NonNull<XianWebEngineView>)` on success.
-/// - `Err(EngineInitError)` when initialization fails.
+/// - `Err(InitError)` when initialization fails.
 ///
 /// ### 中文
 /// 创建 view（首次调用时会惰性初始化引擎）。
@@ -462,19 +463,17 @@ pub(crate) fn tick() -> u32 {
 ///
 /// #### 返回
 /// - 成功返回 `Ok(NonNull<XianWebEngineView>)`。
-/// - 初始化失败返回 `Err(EngineInitError)`。
-pub(crate) fn create_view(
-    params: ViewCreateParams,
-) -> Result<NonNull<XianWebEngineView>, EngineInitError> {
+/// - 初始化失败返回 `Err(InitError)`。
+pub(crate) fn create_view(params: ViewParams) -> Result<NonNull<XianWebEngineView>, InitError> {
     ENGINE.with(|cell| {
-        if cell.borrow().is_none() {
-            let engine = Engine::new(engine_params_from_globals()?)?;
-            *cell.borrow_mut() = Some(engine);
+        let mut engine_slot = cell.borrow_mut();
+        if engine_slot.is_none() {
+            *engine_slot = Some(Engine::new(engine_params_from_globals()?)?);
         }
-
-        let mut binding = cell.borrow_mut();
-        let engine = binding.as_mut().expect("engine must be initialized above");
-        Ok(engine.create_view(params))
+        Ok(engine_slot
+            .as_mut()
+            .expect("engine must be initialized above")
+            .create_view(params))
     })
 }
 
@@ -491,8 +490,8 @@ pub(crate) fn create_view(
 /// - `view`：要移除的 view 指针。
 pub(crate) fn unregister_view(view: NonNull<XianWebEngineView>) {
     ENGINE.with(|cell| {
-        let mut binding = cell.borrow_mut();
-        let Some(engine) = binding.as_mut() else {
+        let mut engine_slot = cell.borrow_mut();
+        let Some(engine) = engine_slot.as_mut() else {
             return;
         };
         engine.unregister_view(view);
@@ -504,7 +503,7 @@ pub(crate) fn unregister_view(view: NonNull<XianWebEngineView>) {
 ///
 /// ### 中文
 /// 引擎创建参数（来自进程全局的 ABI 设置）。
-pub(crate) struct EngineCreateParams {
+pub(crate) struct EngineParams {
     /// ### English
     /// Pointer to embedder-owned `GLFWwindow*`.
     ///
@@ -553,7 +552,7 @@ pub(crate) struct EngineCreateParams {
 ///
 /// ### 中文
 /// View 创建参数。
-pub(crate) struct ViewCreateParams {
+pub(crate) struct ViewParams {
     /// ### English
     /// Initial width in pixels.
     ///
@@ -574,28 +573,17 @@ pub(crate) struct ViewCreateParams {
     /// ### 中文
     /// 可选的初始 URL（创建后自动加载）。
     pub(crate) initial_url: Option<url::Url>,
-}
-
-#[derive(Clone, Copy)]
-/// ### English
-/// Engine behavior flags (kept small for hot-path checks).
-///
-/// ### 中文
-/// 引擎行为开关（保持精简以便热路径判断）。
-struct Flags {
-    /// ### English
-    /// Whether to assume the embedder context is already current on the calling thread.
-    ///
-    /// ### 中文
-    /// 是否假定宿主上下文已在调用线程 current。
-    assume_context_current: bool,
 
     /// ### English
-    /// Whether to paint dirty views automatically in `tick`.
+    /// HiDPI scale factor (`1.0` means 1 CSS pixel = 1 device pixel).
+    ///
+    /// Values that are non-finite or `<= 0` are treated as `1.0`.
     ///
     /// ### 中文
-    /// 是否在 `tick` 中自动绘制 dirty view。
-    auto_paint: bool,
+    /// HiDPI 缩放因子（`1.0` 表示 1 个 CSS 像素 = 1 个设备像素）。
+    ///
+    /// 非有限值或 `<= 0` 会被视为 `1.0`。
+    pub(crate) hidpi_scale_factor: f32,
 }
 
 #[derive(Clone)]
@@ -840,7 +828,6 @@ impl DirtyTracker {
         }
 
         let count = self.dirty_count.get();
-        debug_assert!(count > 0);
         self.dirty_count.set(count.saturating_sub(1));
         true
     }
@@ -887,18 +874,30 @@ impl WebViewDelegate for DirtyTracker {
 /// 线程本地的引擎状态。
 struct Engine {
     /// ### English
-    /// Engine flags captured at creation time.
-    ///
-    /// ### 中文
-    /// 创建时确定的引擎开关。
-    flags: Flags,
-
-    /// ### English
     /// Flag flipped by Servo's waker; used by `needs_tick`.
     ///
     /// ### 中文
     /// 由 Servo 的 waker 翻转的标记；供 `needs_tick` 判断使用。
     tick_pending: Arc<AtomicBool>,
+
+    /// ### English
+    /// Number of views currently marked as dirty (has a frame ready).
+    ///
+    /// This is updated by each `DirtyTracker` so `needs_tick` can stay O(1) when `auto_paint`
+    /// is enabled.
+    ///
+    /// ### 中文
+    /// 当前被标记为 dirty（已生成新帧）的 view 数量。
+    ///
+    /// 该计数由每个 `DirtyTracker` 维护，使得在开启 `auto_paint` 时 `needs_tick` 保持 O(1)。
+    dirty_count: Rc<Cell<usize>>,
+
+    /// ### English
+    /// Whether to paint dirty views automatically in `tick`.
+    ///
+    /// ### 中文
+    /// 是否在 `tick` 中自动绘制 dirty view。
+    auto_paint: bool,
 
     /// ### English
     /// Refresh driver used by Servo to schedule frame callbacks.
@@ -934,18 +933,6 @@ struct Engine {
     /// ### 中文
     /// 当前注册的 view 的原始指针（来自 `Box` 的稳定地址）。
     views: Vec<NonNull<XianWebEngineView>>,
-
-    /// ### English
-    /// Number of views currently marked as dirty (has a frame ready).
-    ///
-    /// This is updated by each `DirtyTracker` so `needs_tick` can stay O(1) when `auto_paint`
-    /// is enabled.
-    ///
-    /// ### 中文
-    /// 当前被标记为 dirty（已生成新帧）的 view 数量。
-    ///
-    /// 该计数由每个 `DirtyTracker` 维护，使得在开启 `auto_paint` 时 `needs_tick` 保持 O(1)。
-    dirty_count: Rc<Cell<usize>>,
 }
 
 impl Engine {
@@ -957,7 +944,7 @@ impl Engine {
     ///
     /// #### Returns
     /// - `Ok(Engine)` on success.
-    /// - `Err(EngineInitError)` on initialization failure.
+    /// - `Err(InitError)` on initialization failure.
     ///
     /// ### 中文
     /// 创建新的引擎实例。
@@ -967,8 +954,8 @@ impl Engine {
     ///
     /// #### 返回
     /// - 成功返回 `Ok(Engine)`。
-    /// - 初始化失败返回 `Err(EngineInitError)`。
-    pub(crate) fn new(params: EngineCreateParams) -> Result<Self, EngineInitError> {
+    /// - 初始化失败返回 `Err(InitError)`。
+    pub(crate) fn new(params: EngineParams) -> Result<Self, InitError> {
         RUSTLS_PROVIDER_INIT.call_once(|| {
             /*
             ### English
@@ -989,21 +976,16 @@ impl Engine {
             let _ = std::fs::create_dir_all(config_dir);
         }
 
-        let flags = Flags {
-            assume_context_current: params.assume_context_current,
-            auto_paint: params.auto_paint,
-        };
-
         let glfw = unsafe {
             GlfwContext::from_raw(
                 params.glfw_window,
                 params.glfw_get_proc_address,
                 params.glfw_make_context_current,
-                flags.assume_context_current,
+                params.assume_context_current,
             )?
         };
 
-        unsafe { glfw.make_current()? };
+        unsafe { glfw.make_current() };
 
         let gl_api = GlApi::from_u32(params.gl_api)?;
         let gl = unsafe { GlHandles::new(gl_api, &glfw)? };
@@ -1060,7 +1042,7 @@ impl Engine {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
-            return Err(EngineInitError::ServoAlreadyInitialized);
+            return Err(InitError::ServoAlreadyInitialized);
         }
 
         let servo = servo::ServoBuilder::default()
@@ -1070,14 +1052,14 @@ impl Engine {
             .build();
 
         Ok(Self {
-            flags,
             tick_pending,
+            dirty_count: Rc::new(Cell::new(0)),
+            auto_paint: params.auto_paint,
             frame_driver,
             glfw,
             gl,
             servo,
             views: Vec::new(),
-            dirty_count: Rc::new(Cell::new(0)),
         })
     }
 
@@ -1099,7 +1081,7 @@ impl Engine {
             return true;
         }
 
-        if self.flags.auto_paint && self.dirty_count.get() != 0 {
+        if self.auto_paint && self.dirty_count.get() != 0 {
             return true;
         }
 
@@ -1126,7 +1108,7 @@ impl Engine {
         self.frame_driver.begin_frame();
         self.servo.spin_event_loop();
 
-        if !self.flags.auto_paint {
+        if !self.auto_paint {
             return 0;
         }
 
@@ -1139,6 +1121,9 @@ impl Engine {
             let view = unsafe { ptr.as_ref() };
             if view.paint() {
                 painted += 1;
+                if self.dirty_count.get() == 0 {
+                    break;
+                }
             }
         }
         painted
@@ -1161,8 +1146,14 @@ impl Engine {
     ///
     /// #### 返回
     /// - 非空的 view 指针。
-    pub(crate) fn create_view(&mut self, params: ViewCreateParams) -> NonNull<XianWebEngineView> {
+    pub(crate) fn create_view(&mut self, params: ViewParams) -> NonNull<XianWebEngineView> {
         let size = PhysicalSize::new(params.width.max(1), params.height.max(1));
+        let hidpi_scale_factor =
+            if params.hidpi_scale_factor.is_finite() && params.hidpi_scale_factor > 0.0 {
+                params.hidpi_scale_factor
+            } else {
+                1.0
+            };
 
         let rendering_context = Rc::new(TextureContext::new(
             self.glfw,
@@ -1174,6 +1165,7 @@ impl Engine {
         let dirty_tracker = Rc::new(DirtyTracker::new(Rc::clone(&self.dirty_count)));
 
         let webview = WebViewBuilder::new(&self.servo, rendering_context.clone())
+            .hidpi_scale_factor(euclid::Scale::new(hidpi_scale_factor))
             .delegate(dirty_tracker.clone())
             .build();
 
@@ -1323,6 +1315,40 @@ impl XianWebEngineView {
     }
 
     /// ### English
+    /// Sets the HiDPI scale factor for this view.
+    ///
+    /// This affects CSS pixel <-> device pixel conversion (e.g. `devicePixelRatio`) and can be
+    /// updated at runtime (for example when moving between monitors).
+    ///
+    /// #### Parameters
+    /// - `hidpi_scale_factor`: Scale factor (`1.0` means 1 CSS pixel = 1 device pixel).
+    ///
+    /// #### Returns
+    /// - `true` if the value was accepted.
+    /// - `false` if the value is non-finite or `<= 0`.
+    ///
+    /// ### 中文
+    /// 设置该 view 的 HiDPI 缩放因子。
+    ///
+    /// 该值会影响 CSS 像素与设备像素的换算（例如 `devicePixelRatio`），并且支持运行期更新
+    ///（例如窗口移动到不同 DPI 的显示器上）。
+    ///
+    /// #### 参数
+    /// - `hidpi_scale_factor`：缩放因子（`1.0` 表示 1 个 CSS 像素 = 1 个设备像素）。
+    ///
+    /// #### 返回
+    /// - 值被接受则返回 `true`。
+    /// - 非有限值或 `<= 0` 则返回 `false`。
+    pub(crate) fn set_hidpi_scale_factor(&self, hidpi_scale_factor: f32) -> bool {
+        if !hidpi_scale_factor.is_finite() || hidpi_scale_factor <= 0.0 {
+            return false;
+        }
+        self.webview
+            .set_hidpi_scale_factor(euclid::Scale::new(hidpi_scale_factor));
+        true
+    }
+
+    /// ### English
     /// Returns the OpenGL texture id of this view.
     ///
     /// #### Returns
@@ -1383,7 +1409,7 @@ impl XianWebEngineView {
     /// - `events`: ABI input events.
     ///
     /// #### Returns
-    /// - Number of events accepted.
+    /// - Number of events forwarded to Servo (supported/converted).
     ///
     /// ### 中文
     /// 向该 view 发送一批输入事件。
@@ -1392,16 +1418,16 @@ impl XianWebEngineView {
     /// - `events`：ABI 输入事件切片。
     ///
     /// #### 返回
-    /// - 被接受的事件数量。
+    /// - 实际转发给 Servo 的事件数量（支持且完成转换的事件）。
     pub(crate) fn send_input_events(&self, events: &[XianWebEngineInputEvent]) -> u32 {
-        let mut accepted = 0u32;
+        let mut forwarded = 0u32;
         for e in events {
             let Some(event) = map_input_event(e) else {
                 continue;
             };
-            let _ = self.webview.notify_input_event(event);
-            accepted += 1;
+            self.webview.notify_input_event(event);
+            forwarded += 1;
         }
-        accepted
+        forwarded
     }
 }

@@ -4,7 +4,7 @@
 //! ### 中文
 //! OpenGL 粘合层：外部 GLFW 上下文 + Servo 使用的离屏 FBO 渲染上下文。
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::ffi::{CString, c_char, c_void};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -12,9 +12,9 @@ use std::sync::Arc;
 use dpi::PhysicalSize;
 use gleam::gl::{self, Gl};
 use servo::RgbaImage;
-use surfman::Error;
+use surfman::{Connection, Error};
 
-use crate::error::EngineInitError;
+use crate::error::InitError;
 
 #[repr(u32)]
 #[derive(Clone, Copy)]
@@ -48,7 +48,7 @@ impl GlApi {
     ///
     /// #### Returns
     /// - `Ok(GlApi)` on success.
-    /// - `Err(EngineInitError)` when the value is unsupported.
+    /// - `Err(InitError)` when the value is unsupported.
     ///
     /// ### 中文
     /// 将 C ABI 的 `gl_api` 值解析为 `GlApi`。
@@ -58,12 +58,12 @@ impl GlApi {
     ///
     /// #### 返回
     /// - 成功返回 `Ok(GlApi)`。
-    /// - 不支持时返回 `Err(EngineInitError)`。
-    pub(crate) fn from_u32(value: u32) -> Result<Self, EngineInitError> {
+    /// - 不支持时返回 `Err(InitError)`。
+    pub(crate) fn from_u32(value: u32) -> Result<Self, InitError> {
         match value {
-            crate::ffi::XIAN_WEB_ENGINE_GL_API_GL => Ok(Self::Gl),
-            crate::ffi::XIAN_WEB_ENGINE_GL_API_GLES => Ok(Self::Gles),
-            _ => Err(EngineInitError::UnsupportedGlApi { value }),
+            crate::abi::XIAN_WEB_ENGINE_GL_API_GL => Ok(Self::Gl),
+            crate::abi::XIAN_WEB_ENGINE_GL_API_GLES => Ok(Self::Gles),
+            _ => Err(InitError::UnsupportedGlApi { value }),
         }
     }
 }
@@ -82,37 +82,18 @@ type GlfwGetProcAddressFn = unsafe extern "C" fn(*const c_char) -> *const c_void
 /// 本嵌入层使用的 `glfwMakeContextCurrent` 函数签名。
 type GlfwMakeContextCurrentFn = unsafe extern "C" fn(*mut c_void);
 
-#[inline]
-/// ### English
-/// Safety: converts a function pointer address into a typed function pointer.
-///
-/// #### Parameters
-/// - `addr`: Function pointer address (`0` means "NULL").
-///
-/// #### Returns
-/// - `Some(T)` when `addr != 0`.
-/// - `None` when `addr == 0`.
-///
-/// #### Safety
-/// - `addr` must be a valid function pointer address whose signature matches `T`.
-///
-/// ### 中文
-/// 安全性：将函数指针地址转换为带签名的函数指针。
-///
-/// #### 参数
-/// - `addr`：函数指针地址（`0` 表示“NULL”）。
-///
-/// #### 返回
-/// - `addr != 0` 时返回 `Some(T)`。
-/// - `addr == 0` 时返回 `None`。
-///
-/// #### 安全性
-/// - `addr` 必须是有效的函数指针地址，且其签名必须与 `T` 匹配。
-unsafe fn addr_to_fn<T>(addr: usize) -> Option<T> {
-    if addr == 0 {
-        return None;
-    }
-    Some(unsafe { std::mem::transmute_copy::<usize, T>(&addr) })
+thread_local! {
+    /// ### English
+    /// Thread-local Surfman `Connection` cache (created lazily).
+    ///
+    /// `surfman::Connection` is not guaranteed to be `Sync` on all platforms, so this cache is
+    /// thread-local by design.
+    ///
+    /// ### 中文
+    /// 线程本地的 Surfman `Connection` 缓存（惰性创建）。
+    ///
+    /// `surfman::Connection` 在所有平台上都不保证实现 `Sync`，因此该缓存刻意设计为 thread-local。
+    static SURFMAN_CONNECTION: OnceCell<Connection> = const { OnceCell::new() };
 }
 
 #[inline]
@@ -121,11 +102,11 @@ unsafe fn addr_to_fn<T>(addr: usize) -> Option<T> {
 ///
 /// #### Parameters
 /// - `addr`: Function pointer address (`0` means "NULL").
-/// - `name`: Symbol name (for debugging).
+/// - `name`: Symbol name (for diagnostics).
 ///
 /// #### Returns
 /// - `Ok(T)` when `addr != 0`.
-/// - `Err(EngineInitError)` when `addr == 0`.
+/// - `Err(InitError)` when `addr == 0`.
 ///
 /// #### Safety
 /// - `addr` must be a valid function pointer address whose signature matches `T`.
@@ -135,16 +116,19 @@ unsafe fn addr_to_fn<T>(addr: usize) -> Option<T> {
 ///
 /// #### 参数
 /// - `addr`：函数指针地址（`0` 表示“NULL”）。
-/// - `name`：符号名（用于调试定位）。
+/// - `name`：符号名（用于诊断定位）。
 ///
 /// #### 返回
 /// - `addr != 0` 时返回 `Ok(T)`。
-/// - `addr == 0` 时返回 `Err(EngineInitError)`。
+/// - `addr == 0` 时返回 `Err(InitError)`。
 ///
 /// #### 安全性
 /// - `addr` 必须是有效的函数指针地址，且其签名必须与 `T` 匹配。
-unsafe fn addr_to_fn_required<T>(addr: usize, name: &'static str) -> Result<T, EngineInitError> {
-    unsafe { addr_to_fn(addr) }.ok_or(EngineInitError::NullFunctionPointer { name })
+unsafe fn fn_from_addr<T>(addr: usize, name: &'static str) -> Result<T, InitError> {
+    if addr == 0 {
+        return Err(InitError::NullPointer { name });
+    }
+    Ok(unsafe { std::mem::transmute_copy::<usize, T>(&addr) })
 }
 
 #[derive(Clone, Copy)]
@@ -171,16 +155,13 @@ pub(crate) struct GlfwContext {
     /// ### English
     /// Optional `glfwMakeContextCurrent` entry point.
     ///
-    /// ### 中文
-    /// 可选的 `glfwMakeContextCurrent` 入口。
-    make_context_current: Option<GlfwMakeContextCurrentFn>,
-
-    /// ### English
-    /// Whether the caller guarantees the context is already current on this thread.
+    /// When "assume current" is enabled, this is stored as `None` and all calls become no-ops.
     ///
     /// ### 中文
-    /// 调用方是否保证上下文已在当前线程 current。
-    assume_current: bool,
+    /// 可选的 `glfwMakeContextCurrent` 入口。
+    ///
+    /// 当启用“假定 current”时该字段为 `None`，相关调用将变为 no-op。
+    make_context_current: Option<GlfwMakeContextCurrentFn>,
 }
 
 impl GlfwContext {
@@ -190,12 +171,12 @@ impl GlfwContext {
     /// #### Parameters
     /// - `window`: Embedder-owned `GLFWwindow*`.
     /// - `glfw_get_proc_address`: Address of `glfwGetProcAddress` (as `uintptr_t`).
-    /// - `glfw_make_context_current`: Address of `glfwMakeContextCurrent` (as `uintptr_t`, 0 allowed).
+    /// - `glfw_make_context_current`: Address of `glfwMakeContextCurrent` (as `uintptr_t`, required when `assume_current == false`).
     /// - `assume_current`: Whether to skip calling `glfwMakeContextCurrent` on hot paths.
     ///
     /// #### Returns
     /// - `Ok(GlfwContext)` on success.
-    /// - `Err(EngineInitError)` if required function pointers are missing.
+    /// - `Err(InitError)` if required function pointers are missing.
     ///
     /// #### Safety
     /// - `window` must be a valid `GLFWwindow*` for the embedder.
@@ -207,12 +188,12 @@ impl GlfwContext {
     /// #### 参数
     /// - `window`：宿主侧 `GLFWwindow*`。
     /// - `glfw_get_proc_address`：`glfwGetProcAddress` 的地址（`uintptr_t`）。
-    /// - `glfw_make_context_current`：`glfwMakeContextCurrent` 的地址（`uintptr_t`，允许为 0）。
+    /// - `glfw_make_context_current`：`glfwMakeContextCurrent` 的地址（`uintptr_t`；当 `assume_current == false` 时必须提供）。
     /// - `assume_current`：是否在热路径上跳过 `glfwMakeContextCurrent`。
     ///
     /// #### 返回
     /// - 成功返回 `Ok(GlfwContext)`。
-    /// - 必需函数指针缺失时返回 `Err(EngineInitError)`。
+    /// - 必需函数指针缺失时返回 `Err(InitError)`。
     ///
     /// #### 安全性
     /// - `window` 必须是宿主侧有效的 `GLFWwindow*`。
@@ -222,51 +203,39 @@ impl GlfwContext {
         glfw_get_proc_address: usize,
         glfw_make_context_current: usize,
         assume_current: bool,
-    ) -> Result<Self, EngineInitError> {
+    ) -> Result<Self, InitError> {
         let get_proc_address: GlfwGetProcAddressFn =
-            unsafe { addr_to_fn_required(glfw_get_proc_address, "glfwGetProcAddress")? };
-        let make_context_current: Option<GlfwMakeContextCurrentFn> =
-            unsafe { addr_to_fn(glfw_make_context_current) };
+            unsafe { fn_from_addr(glfw_get_proc_address, "glfwGetProcAddress")? };
+        let make_context_current: Option<GlfwMakeContextCurrentFn> = if assume_current {
+            None
+        } else {
+            Some(unsafe { fn_from_addr(glfw_make_context_current, "glfwMakeContextCurrent")? })
+        };
         Ok(Self {
             window,
             get_proc_address,
             make_context_current,
-            assume_current,
         })
     }
 
     /// ### English
-    /// Makes the embedder context current (when `assume_current == false`).
-    ///
-    /// #### Returns
-    /// - `Ok(())` when the context is current or assumed current.
-    /// - `Err(EngineInitError)` when the function pointer is missing.
+    /// Makes the embedder context current (unless "assume current" is enabled).
     ///
     /// #### Safety
     /// - Must be called on the thread that is allowed to make the context current.
     /// - The `window` pointer must remain valid.
     ///
     /// ### 中文
-    /// 将宿主上下文设为 current（当 `assume_current == false` 时）。
-    ///
-    /// #### 返回
-    /// - 上下文已 current 或被假定为 current 时返回 `Ok(())`。
-    /// - 函数指针缺失时返回 `Err(EngineInitError)`。
+    /// 将宿主上下文设为 current（除非启用“假定 current”）。
     ///
     /// #### 安全性
     /// - 必须在允许切换上下文的线程调用。
     /// - `window` 指针必须保持有效。
-    pub(crate) unsafe fn make_current(&self) -> Result<(), EngineInitError> {
-        if self.assume_current {
-            return Ok(());
-        }
+    pub(crate) unsafe fn make_current(&self) {
         let Some(make_current) = self.make_context_current else {
-            return Err(EngineInitError::NullFunctionPointer {
-                name: "glfwMakeContextCurrent",
-            });
+            return;
         };
         unsafe { make_current(self.window) };
-        Ok(())
     }
 
     /// ### English
@@ -288,10 +257,9 @@ impl GlfwContext {
     /// - 原始函数指针地址（不可用时为 NULL）。
     fn load(&self, name: &str) -> *const c_void {
         let bytes = name.as_bytes();
-        debug_assert!(!bytes.contains(&0));
 
         const STACK_BUF_CAP: usize = 128;
-        if bytes.len() + 1 <= STACK_BUF_CAP {
+        if bytes.len() < STACK_BUF_CAP {
             let mut buf = [0u8; STACK_BUF_CAP];
             buf[..bytes.len()].copy_from_slice(bytes);
             unsafe { (self.get_proc_address)(buf.as_ptr().cast()) }
@@ -336,7 +304,7 @@ impl GlHandles {
     ///
     /// #### Returns
     /// - `Ok(GlHandles)` when loading succeeded.
-    /// - `Err(EngineInitError)` on missing required entry points.
+    /// - `Err(InitError)` on missing required entry points.
     ///
     /// #### Safety
     /// - The OpenGL context must be current before calling.
@@ -350,11 +318,11 @@ impl GlHandles {
     ///
     /// #### 返回
     /// - 加载成功返回 `Ok(GlHandles)`。
-    /// - 缺少必需入口时返回 `Err(EngineInitError)`。
+    /// - 缺少必需入口时返回 `Err(InitError)`。
     ///
     /// #### 安全性
     /// - 调用前 OpenGL 上下文必须已 current。
-    pub(crate) unsafe fn new(gl_api: GlApi, glfw: &GlfwContext) -> Result<Self, EngineInitError> {
+    pub(crate) unsafe fn new(gl_api: GlApi, glfw: &GlfwContext) -> Result<Self, InitError> {
         validate_gl_entry_points(glfw)?;
         let gleam_gl: Rc<dyn Gl> = match gl_api {
             GlApi::Gl => unsafe { gl::GlFns::load_with(|s| glfw.load(s) as *const _) },
@@ -380,7 +348,7 @@ impl GlHandles {
 ///
 /// #### Returns
 /// - `Ok(())` when all required symbols are available.
-/// - `Err(EngineInitError)` when any required symbol is missing.
+/// - `Err(InitError)` when any required symbol is missing.
 ///
 /// ### 中文
 /// 校验本嵌入层所需的最小 OpenGL 入口集合。
@@ -392,8 +360,8 @@ impl GlHandles {
 ///
 /// #### 返回
 /// - 全部必需符号可用时返回 `Ok(())`。
-/// - 任意必需符号缺失时返回 `Err(EngineInitError)`。
-fn validate_gl_entry_points(glfw: &GlfwContext) -> Result<(), EngineInitError> {
+/// - 任意必需符号缺失时返回 `Err(InitError)`。
+fn validate_gl_entry_points(glfw: &GlfwContext) -> Result<(), InitError> {
     const REQUIRED: &[&str] = &[
         "glGenFramebuffers",
         "glBindFramebuffer",
@@ -416,7 +384,7 @@ fn validate_gl_entry_points(glfw: &GlfwContext) -> Result<(), EngineInitError> {
 
     for &name in REQUIRED {
         if glfw.load(name).is_null() {
-            return Err(EngineInitError::MissingOpenGlEntryPoint { name });
+            return Err(InitError::MissingOpenGlEntryPoint { name });
         }
     }
     Ok(())
@@ -443,10 +411,10 @@ struct Framebuffer {
     framebuffer_id: gl::GLuint,
 
     /// ### English
-    /// GL renderbuffer id (depth attachment).
+    /// GL renderbuffer id (depth-stencil attachment).
     ///
     /// ### 中文
-    /// GL renderbuffer id（深度附件）。
+    /// GL renderbuffer id（深度+模板附件）。
     renderbuffer_id: gl::GLuint,
 
     /// ### English
@@ -495,7 +463,7 @@ impl Framebuffer {
         gl.tex_image_2d(
             gl::TEXTURE_2D,
             0,
-            gl::RGBA as gl::GLint,
+            gl::RGBA8 as gl::GLint,
             size.width as gl::GLsizei,
             size.height as gl::GLsizei,
             0,
@@ -519,15 +487,23 @@ impl Framebuffer {
         let renderbuffer_ids = gl.gen_renderbuffers(1);
         let renderbuffer_id = renderbuffer_ids[0];
         gl.bind_renderbuffer(gl::RENDERBUFFER, renderbuffer_id);
+        /*
+        ### English
+        WebRender relies on stencil for clipping/masking. Use a depth-stencil attachment to keep
+        the FBO compatible with WebRender's expectations.
+
+        ### 中文
+        WebRender 依赖模板缓冲用于裁剪/遮罩；这里使用“深度+模板”附件，确保该 FBO 与 WebRender 的预期兼容。
+        */
         gl.renderbuffer_storage(
             gl::RENDERBUFFER,
-            gl::DEPTH_COMPONENT24,
+            gl::DEPTH24_STENCIL8,
             size.width as gl::GLsizei,
             size.height as gl::GLsizei,
         );
         gl.framebuffer_renderbuffer(
             gl::FRAMEBUFFER,
-            gl::DEPTH_ATTACHMENT,
+            gl::DEPTH_STENCIL_ATTACHMENT,
             gl::RENDERBUFFER,
             renderbuffer_id,
         );
@@ -566,7 +542,7 @@ impl Framebuffer {
         self.gl.tex_image_2d(
             gl::TEXTURE_2D,
             0,
-            gl::RGBA as gl::GLint,
+            gl::RGBA8 as gl::GLint,
             size.width as gl::GLsizei,
             size.height as gl::GLsizei,
             0,
@@ -580,7 +556,7 @@ impl Framebuffer {
             .bind_renderbuffer(gl::RENDERBUFFER, self.renderbuffer_id);
         self.gl.renderbuffer_storage(
             gl::RENDERBUFFER,
-            gl::DEPTH_COMPONENT24,
+            gl::DEPTH24_STENCIL8,
             size.width as gl::GLsizei,
             size.height as gl::GLsizei,
         );
@@ -645,8 +621,6 @@ impl Framebuffer {
         let width = source_rectangle.width();
         let height = source_rectangle.height();
         let stride = width * 4;
-
-        debug_assert_eq!(pixels.len(), stride.checked_mul(height).unwrap_or(0));
 
         for y in 0..(height / 2) {
             let top = y * stride;
@@ -873,22 +847,43 @@ impl servo::RenderingContext for TextureContext {
     fn present(&self) {}
 
     /// ### English
+    /// Returns a Surfman `Connection` required by Servo's paint subsystem.
+    ///
+    /// On Windows this is effectively a no-op; on Unix/macOS this may connect to the display
+    /// server. This implementation fails fast on error to avoid later panics inside Servo.
+    ///
+    /// #### Returns
+    /// - `Some(Connection)` when created successfully.
+    ///
+    /// ### 中文
+    /// 返回 Servo 绘制子系统所需的 Surfman `Connection`。
+    ///
+    /// 在 Windows 上该对象基本是 no-op；在 Unix/macOS 上可能会连接到显示服务器。
+    /// 本实现选择在创建失败时立刻失败，以避免后续在 Servo 内部以 `expect` 形式崩溃。
+    ///
+    /// #### 返回
+    /// - 创建成功时返回 `Some(Connection)`。
+    fn connection(&self) -> Option<Connection> {
+        Some(SURFMAN_CONNECTION.with(|cell| {
+            cell.get_or_init(|| Connection::new().expect("surfman::Connection::new failed"))
+                .clone()
+        }))
+    }
+
+    /// ### English
     /// Ensures the embedder context is current.
     ///
     /// #### Returns
     /// - `Ok(())` when the context is current (or assumed current).
-    /// - `Err(Error)` when making the context current fails.
     ///
     /// ### 中文
     /// 确保宿主上下文为 current。
     ///
     /// #### 返回
     /// - 上下文为 current（或被假定为 current）时返回 `Ok(())`。
-    /// - 切换上下文失败时返回 `Err(Error)`。
+    ///
     fn make_current(&self) -> Result<(), Error> {
-        if unsafe { self.glfw.make_current() }.is_err() {
-            return Err(Error::Failed);
-        }
+        unsafe { self.glfw.make_current() };
         Ok(())
     }
 

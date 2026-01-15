@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 servo = { git = "https://github.com/servo/servo", package = "libservo" }
 dpi = "0.1"
+euclid = "0.22"
 gleam = "0.15"
 glow = "0.16.0"
 surfman = { version = "0.11.0", features = ["chains"] }
@@ -18,11 +19,15 @@ rustls = { version = "0.23", default-features = false, features = [
 name = "xian_web_engine"
 crate-type = ["cdylib"]
 
+[profile.dev]
+panic = "abort"
+
 [profile.release]
 lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = "symbols"
+debug = false
 
 [profile.native]
 inherits = "release"
@@ -30,3 +35,4 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = "symbols"
+debug = false

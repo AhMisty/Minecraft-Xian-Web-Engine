@@ -1,8 +1,12 @@
 //! ### English
-//! Input event ABI + mapping into Servo `InputEvent`.
+//! Mapping C ABI input events into Servo `InputEvent`.
+//!
+//! ABI structs and constants live in `crate::abi`.
 //!
 //! ### 中文
-//! 输入事件 ABI + 映射到 Servo `InputEvent`。
+//! 将 C ABI 输入事件映射到 Servo `InputEvent`。
+//!
+//! ABI 结构体与常量位于 `crate::abi`。
 
 use servo::{
     DevicePoint, InputEvent, Key, KeyState, KeyboardEvent, Location, Modifiers, MouseButton,
@@ -10,233 +14,14 @@ use servo::{
     WheelMode,
 };
 
-/// ### English
-/// Input event kind: mouse move.
-///
-/// ### 中文
-/// 输入事件类型：鼠标移动。
-pub const XIAN_WEB_ENGINE_INPUT_KIND_MOUSE_MOVE: u32 = 1;
+use crate::abi::{
+    XIAN_WEB_ENGINE_INPUT_KIND_KEY, XIAN_WEB_ENGINE_INPUT_KIND_MOUSE_BUTTON,
+    XIAN_WEB_ENGINE_INPUT_KIND_MOUSE_MOVE, XIAN_WEB_ENGINE_INPUT_KIND_WHEEL,
+    XIAN_WEB_ENGINE_MOD_ALT, XIAN_WEB_ENGINE_MOD_CONTROL, XIAN_WEB_ENGINE_MOD_META,
+    XIAN_WEB_ENGINE_MOD_SHIFT, XianWebEngineInputEvent,
+};
 
-/// ### English
-/// Input event kind: mouse button.
-///
-/// ### 中文
-/// 输入事件类型：鼠标按键。
-pub const XIAN_WEB_ENGINE_INPUT_KIND_MOUSE_BUTTON: u32 = 2;
-
-/// ### English
-/// Input event kind: wheel.
-///
-/// ### 中文
-/// 输入事件类型：滚轮。
-pub const XIAN_WEB_ENGINE_INPUT_KIND_WHEEL: u32 = 3;
-
-/// ### English
-/// Input event kind: keyboard.
-///
-/// ### 中文
-/// 输入事件类型：键盘。
-pub const XIAN_WEB_ENGINE_INPUT_KIND_KEY: u32 = 4;
-
-/// ### English
-/// Modifier bit: SHIFT.
-///
-/// ### 中文
-/// 修饰键位：SHIFT。
-pub const XIAN_WEB_ENGINE_MOD_SHIFT: u32 = 1 << 0;
-
-/// ### English
-/// Modifier bit: CONTROL.
-///
-/// ### 中文
-/// 修饰键位：CONTROL。
-pub const XIAN_WEB_ENGINE_MOD_CONTROL: u32 = 1 << 1;
-
-/// ### English
-/// Modifier bit: ALT.
-///
-/// ### 中文
-/// 修饰键位：ALT。
-pub const XIAN_WEB_ENGINE_MOD_ALT: u32 = 1 << 2;
-
-/// ### English
-/// Modifier bit: META (Windows/Super/Command).
-///
-/// ### 中文
-/// 修饰键位：META（Windows/Super/Command）。
-pub const XIAN_WEB_ENGINE_MOD_META: u32 = 1 << 3;
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-/// ### English
-/// Compact input event struct for the C ABI.
-///
-/// One struct carries all event types; interpretation depends on `kind`.
-///
-/// ### 中文
-/// C ABI 使用的紧凑输入事件结构。
-///
-/// 单一结构承载所有事件类型，具体语义由 `kind` 决定。
-pub struct XianWebEngineInputEvent {
-    /// ### English
-    /// Event kind: `XIAN_WEB_ENGINE_INPUT_KIND_*`.
-    ///
-    /// ### 中文
-    /// 事件类型：`XIAN_WEB_ENGINE_INPUT_KIND_*`。
-    pub kind: u32,
-
-    /// ### English
-    /// X position in device pixels (used by mouse move/button/wheel).
-    ///
-    /// ### 中文
-    /// X 坐标（设备像素；用于鼠标移动/按键/滚轮）。
-    pub x: f32,
-
-    /// ### English
-    /// Y position in device pixels (used by mouse move/button/wheel).
-    ///
-    /// ### 中文
-    /// Y 坐标（设备像素；用于鼠标移动/按键/滚轮）。
-    pub y: f32,
-
-    /// ### English
-    /// Modifier mask: `XIAN_WEB_ENGINE_MOD_*`.
-    ///
-    /// ### 中文
-    /// 修饰键位掩码：`XIAN_WEB_ENGINE_MOD_*`。
-    pub modifiers: u32,
-
-    /// ### English
-    /// Mouse button id (used when `kind == XIAN_WEB_ENGINE_INPUT_KIND_MOUSE_BUTTON`).
-    ///
-    /// ### 中文
-    /// 鼠标按键编号（当 `kind == XIAN_WEB_ENGINE_INPUT_KIND_MOUSE_BUTTON` 时使用）。
-    pub mouse_button: u32,
-
-    /// ### English
-    /// Mouse action (used when `kind == XIAN_WEB_ENGINE_INPUT_KIND_MOUSE_BUTTON`).
-    ///
-    /// - `0`: down
-    /// - non-zero: up
-    ///
-    /// ### 中文
-    /// 鼠标动作（当 `kind == XIAN_WEB_ENGINE_INPUT_KIND_MOUSE_BUTTON` 时使用）。
-    ///
-    /// - `0`：按下
-    /// - 非 0：抬起
-    pub mouse_action: u32,
-
-    /// ### English
-    /// Wheel delta X (used when `kind == XIAN_WEB_ENGINE_INPUT_KIND_WHEEL`).
-    ///
-    /// ### 中文
-    /// 滚轮增量 X（当 `kind == XIAN_WEB_ENGINE_INPUT_KIND_WHEEL` 时使用）。
-    pub wheel_delta_x: f64,
-
-    /// ### English
-    /// Wheel delta Y (used when `kind == XIAN_WEB_ENGINE_INPUT_KIND_WHEEL`).
-    ///
-    /// ### 中文
-    /// 滚轮增量 Y（当 `kind == XIAN_WEB_ENGINE_INPUT_KIND_WHEEL` 时使用）。
-    pub wheel_delta_y: f64,
-
-    /// ### English
-    /// Wheel delta Z (used when `kind == XIAN_WEB_ENGINE_INPUT_KIND_WHEEL`).
-    ///
-    /// ### 中文
-    /// 滚轮增量 Z（当 `kind == XIAN_WEB_ENGINE_INPUT_KIND_WHEEL` 时使用）。
-    pub wheel_delta_z: f64,
-
-    /// ### English
-    /// Wheel delta mode (used when `kind == XIAN_WEB_ENGINE_INPUT_KIND_WHEEL`).
-    ///
-    /// - `0`: pixel
-    /// - `1`: line
-    /// - `2`: page
-    ///
-    /// ### 中文
-    /// 滚轮单位（当 `kind == XIAN_WEB_ENGINE_INPUT_KIND_WHEEL` 时使用）。
-    ///
-    /// - `0`：像素
-    /// - `1`：行
-    /// - `2`：页
-    pub wheel_mode: u32,
-
-    /// ### English
-    /// Key state (used when `kind == XIAN_WEB_ENGINE_INPUT_KIND_KEY`).
-    ///
-    /// - `0`: down
-    /// - non-zero: up
-    ///
-    /// ### 中文
-    /// 按键状态（当 `kind == XIAN_WEB_ENGINE_INPUT_KIND_KEY` 时使用）。
-    ///
-    /// - `0`：按下
-    /// - 非 0：抬起
-    pub key_state: u32,
-
-    /// ### English
-    /// Key location (used when `kind == XIAN_WEB_ENGINE_INPUT_KIND_KEY`).
-    ///
-    /// - `0`: standard
-    /// - `1`: left
-    /// - `2`: right
-    /// - `3`: numpad
-    ///
-    /// ### 中文
-    /// 按键位置（当 `kind == XIAN_WEB_ENGINE_INPUT_KIND_KEY` 时使用）。
-    ///
-    /// - `0`：标准
-    /// - `1`：左侧
-    /// - `2`：右侧
-    /// - `3`：数字键盘
-    pub key_location: u32,
-
-    /// ### English
-    /// Whether this key event is a repeat (used when `kind == XIAN_WEB_ENGINE_INPUT_KIND_KEY`).
-    ///
-    /// - `0`: false
-    /// - non-zero: true
-    ///
-    /// ### 中文
-    /// 是否为重复按键（当 `kind == XIAN_WEB_ENGINE_INPUT_KIND_KEY` 时使用）。
-    ///
-    /// - `0`：否
-    /// - 非 0：是
-    pub repeat: u32,
-
-    /// ### English
-    /// Whether the IME is composing (used when `kind == XIAN_WEB_ENGINE_INPUT_KIND_KEY`).
-    ///
-    /// - `0`: false
-    /// - non-zero: true
-    ///
-    /// ### 中文
-    /// 是否处于输入法组合态（当 `kind == XIAN_WEB_ENGINE_INPUT_KIND_KEY` 时使用）。
-    ///
-    /// - `0`：否
-    /// - 非 0：是
-    pub is_composing: u32,
-
-    /// ### English
-    /// Unicode codepoint (used when `kind == XIAN_WEB_ENGINE_INPUT_KIND_KEY`).
-    ///
-    /// Use `0` when no printable character is available.
-    ///
-    /// ### 中文
-    /// Unicode 码点（当 `kind == XIAN_WEB_ENGINE_INPUT_KIND_KEY` 时使用）。
-    ///
-    /// 当没有可打印字符时传 `0`。
-    pub key_codepoint: u32,
-
-    /// ### English
-    /// Raw GLFW key code (used when `kind == XIAN_WEB_ENGINE_INPUT_KIND_KEY`).
-    ///
-    /// ### 中文
-    /// GLFW 原始 key code（当 `kind == XIAN_WEB_ENGINE_INPUT_KIND_KEY` 时使用）。
-    pub glfw_key: u32,
-}
-
+#[inline]
 /// ### English
 /// Maps a C ABI input event into Servo `InputEvent`.
 ///
@@ -256,17 +41,16 @@ pub struct XianWebEngineInputEvent {
 /// #### 返回
 /// - `Some(InputEvent)`：支持并完成转换。
 /// - `None`：未知或不支持的 `kind`。
-#[inline]
 pub(crate) fn map_input_event(event: &XianWebEngineInputEvent) -> Option<InputEvent> {
     let modifiers = modifiers_from_mask(event.modifiers);
 
     match event.kind {
         XIAN_WEB_ENGINE_INPUT_KIND_MOUSE_MOVE => {
-            let point = WebViewPoint::Device(DevicePoint::new(event.x, event.y));
+            let point = event_point(event);
             Some(InputEvent::MouseMove(MouseMoveEvent::new(point)))
         }
         XIAN_WEB_ENGINE_INPUT_KIND_MOUSE_BUTTON => {
-            let point = WebViewPoint::Device(DevicePoint::new(event.x, event.y));
+            let point = event_point(event);
             let action = if event.mouse_action == 0 {
                 MouseButtonAction::Down
             } else {
@@ -279,7 +63,7 @@ pub(crate) fn map_input_event(event: &XianWebEngineInputEvent) -> Option<InputEv
             )))
         }
         XIAN_WEB_ENGINE_INPUT_KIND_WHEEL => {
-            let point = WebViewPoint::Device(DevicePoint::new(event.x, event.y));
+            let point = event_point(event);
             let mode = match event.wheel_mode {
                 1 => WheelMode::DeltaLine,
                 2 => WheelMode::DeltaPage,
@@ -326,6 +110,29 @@ pub(crate) fn map_input_event(event: &XianWebEngineInputEvent) -> Option<InputEv
     }
 }
 
+#[inline]
+/// ### English
+/// Builds a Servo `WebViewPoint` from an ABI event's device-pixel coordinates.
+///
+/// #### Parameters
+/// - `event`: ABI event that contains `x`/`y` in device pixels.
+///
+/// #### Returns
+/// - Device-space `WebViewPoint`.
+///
+/// ### 中文
+/// 根据 ABI 事件的设备像素坐标构造 Servo `WebViewPoint`。
+///
+/// #### 参数
+/// - `event`：包含设备像素 `x`/`y` 的 ABI 事件。
+///
+/// #### 返回
+/// - 设备空间 `WebViewPoint`。
+fn event_point(event: &XianWebEngineInputEvent) -> WebViewPoint {
+    WebViewPoint::Device(DevicePoint::new(event.x, event.y))
+}
+
+#[inline]
 /// ### English
 /// Converts an ABI modifier mask into Servo `Modifiers`.
 ///
@@ -343,7 +150,6 @@ pub(crate) fn map_input_event(event: &XianWebEngineInputEvent) -> Option<InputEv
 ///
 /// #### 返回
 /// - Servo `Modifiers`。
-#[inline]
 fn modifiers_from_mask(mask: u32) -> Modifiers {
     let mut mods = Modifiers::empty();
     if (mask & XIAN_WEB_ENGINE_MOD_SHIFT) != 0 {

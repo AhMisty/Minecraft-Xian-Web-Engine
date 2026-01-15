@@ -1,6 +1,8 @@
 //! ### English
 //! C ABI surface for `xian_web_engine`.
 //!
+//! ABI structs/constants are defined in `crate::abi`.
+//!
 //! Threading model (for performance):
 //! - All functions must be called on the same thread that owns the provided GLFW OpenGL context.
 //! - This crate does not spawn a dedicated "Servo thread".
@@ -10,8 +12,14 @@
 //! - Servo renders into per-view OpenGL textures created in the embedder's context.
 //! - No shared/offscreen GLFW window is created.
 //!
+//! OpenGL state contract (for performance):
+//! - This crate does not save/restore any OpenGL state.
+//! - The embedder must restore its own GL state after calling into the ABI (e.g. after `tick`/`paint`).
+//!
 //! ### 中文
 //! `xian_web_engine` 的 C ABI 接口层。
+//!
+//! ABI 结构体/常量定义在 `crate::abi`。
 //!
 //! 线程模型（为性能而设计）：
 //! - 所有函数必须在同一线程调用，并且该线程持有并绑定（current）传入的 GLFW OpenGL 上下文。
@@ -21,125 +29,21 @@
 //! 渲染模型（为性能而设计）：
 //! - Servo 渲染到“宿主上下文中创建的、每个 view 独立的 OpenGL 纹理”。
 //! - 不会创建共享/离屏的 GLFW window。
+//!
+//! OpenGL 状态约定（为性能而设计）：
+//! - 本库不会保存/恢复任何 OpenGL 状态。
+//! - 调用 ABI（例如 `tick`/`paint`）后，宿主必须自行恢复自身渲染所需的 GL 状态。
 
 use std::ffi::{CStr, c_char, c_void};
 use std::path::PathBuf;
 use std::str::Utf8Error;
 use std::{mem, ptr};
 
-use crate::engine::{ViewCreateParams, XianWebEngineView};
-use crate::input::XianWebEngineInputEvent;
-
-/// ### English
-/// C ABI version.
-///
-/// ### 中文
-/// C ABI 版本号。
-const XIAN_WEB_ENGINE_ABI_VERSION: u32 = 1;
-
-/// ### English
-/// OpenGL API kind (desktop OpenGL).
-///
-/// ### 中文
-/// OpenGL API 类型（桌面 OpenGL）。
-pub const XIAN_WEB_ENGINE_GL_API_GL: u32 = 1;
-
-/// ### English
-/// OpenGL API kind (OpenGL ES).
-///
-/// ### 中文
-/// OpenGL API 类型（OpenGL ES）。
-pub const XIAN_WEB_ENGINE_GL_API_GLES: u32 = 2;
-
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-/// ### English
-/// Minimal GLFW API table required by this embedder.
-///
-/// All fields are raw pointers stored as `uintptr_t` (use 0 for NULL).
-///
-/// ### 中文
-/// 本嵌入层所需的最小 GLFW API 表。
-///
-/// 所有字段使用 `uintptr_t` 承载函数指针（传 0 表示 NULL）。
-pub struct XianWebEngineGlfwApi {
-    /// ### English
-    /// `glfwGetProcAddress` function pointer.
-    ///
-    /// Signature (C): `GLFWglproc glfwGetProcAddress(const char* name)`.
-    ///
-    /// ### 中文
-    /// `glfwGetProcAddress` 函数指针。
-    pub glfw_get_proc_address: usize,
-
-    /// ### English
-    /// `glfwMakeContextCurrent` function pointer (optional when assuming current context).
-    ///
-    /// Signature (C): `void glfwMakeContextCurrent(GLFWwindow* window)`.
-    ///
-    /// ### 中文
-    /// `glfwMakeContextCurrent` 函数指针（在“假定 current”模式下可选）。
-    pub glfw_make_context_current: usize,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-/// ### English
-/// View creation configuration.
-///
-/// ### 中文
-/// View 创建配置。
-pub struct XianWebEngineViewConfig {
-    /// ### English
-    /// Initial view width in pixels (clamped to >= 1).
-    ///
-    /// ### 中文
-    /// 初始宽度（像素，最小为 1）。
-    pub width: u32,
-
-    /// ### English
-    /// Initial view height in pixels (clamped to >= 1).
-    ///
-    /// ### 中文
-    /// 初始高度（像素，最小为 1）。
-    pub height: u32,
-
-    /// ### English
-    /// HiDPI scale factor (`1.0` by default, currently ignored / reserved).
-    ///
-    /// ### 中文
-    /// HiDPI 缩放（默认 `1.0`，当前忽略 / 预留）。
-    pub hidpi_scale_factor: f32,
-
-    /// ### English
-    /// Optional initial URL (NUL-terminated UTF-8). NULL/empty means "do not load".
-    ///
-    /// ### 中文
-    /// 可选初始 URL（NUL 结尾 UTF-8）。传 NULL/空字符串表示“不加载”。
-    pub initial_url: *const c_char,
-}
-
-impl Default for XianWebEngineViewConfig {
-    /// ### English
-    /// Returns the ABI default view configuration values.
-    ///
-    /// #### Returns
-    /// - ABI default `XianWebEngineViewConfig`.
-    ///
-    /// ### 中文
-    /// 返回 ABI 默认 view 配置值。
-    ///
-    /// #### 返回
-    /// - ABI 默认的 `XianWebEngineViewConfig`。
-    fn default() -> Self {
-        Self {
-            width: 0,
-            height: 0,
-            hidpi_scale_factor: 1.0,
-            initial_url: ptr::null(),
-        }
-    }
-}
+use crate::abi::{
+    XIAN_WEB_ENGINE_ABI_VERSION, XIAN_WEB_ENGINE_GL_API_GL, XIAN_WEB_ENGINE_GL_API_GLES,
+    XianWebEngineGlfwApi, XianWebEngineInputEvent, XianWebEngineViewConfig,
+};
+use crate::engine::{ViewParams, XianWebEngineView};
 
 #[unsafe(no_mangle)]
 /// ### English
@@ -170,10 +74,10 @@ pub extern "C" fn xian_web_engine_abi_version() -> u32 {
 ///
 /// #### Returns
 /// - `true` if the path was accepted.
-/// - `false` if Servo is already initialized.
+/// - `false` if Servo is already initialized, or the input is NULL/empty/invalid UTF-8.
 ///
 /// #### Safety
-/// - If non-NULL, `resources_dir` must point to a valid NUL-terminated UTF-8 string.
+/// - If non-NULL, `resources_dir` must point to a valid NUL-terminated string.
 ///
 /// ### 中文
 /// 安装一个基于目录的 Servo `ResourceReader`（进程全局）。
@@ -186,15 +90,15 @@ pub extern "C" fn xian_web_engine_abi_version() -> u32 {
 ///
 /// #### 返回
 /// - 路径被接受则返回 `true`。
-/// - Servo 已初始化则返回 `false`。
+/// - Servo 已初始化，或输入为 NULL/空字符串/UTF-8 无效时返回 `false`。
 ///
 /// #### 安全性
-/// - 若非 NULL，`resources_dir` 必须指向有效的 NUL 结尾 UTF-8 字符串。
+/// - 若非 NULL，`resources_dir` 必须指向有效的 NUL 结尾字符串。
 pub unsafe extern "C" fn xian_web_engine_set_resources_dir(resources_dir: *const c_char) -> bool {
     if crate::engine::is_servo_initialized() {
         return false;
     }
-    let Some(path) = (unsafe { cstr_to_path(resources_dir) }) else {
+    let Some(path) = (unsafe { utf8_cstr_path(resources_dir) }) else {
         return false;
     };
     crate::resources::set_resources_dir(path);
@@ -213,10 +117,10 @@ pub unsafe extern "C" fn xian_web_engine_set_resources_dir(resources_dir: *const
 ///
 /// #### Returns
 /// - `true` if the value was accepted.
-/// - `false` if Servo is already initialized.
+/// - `false` if Servo is already initialized or the input is invalid UTF-8.
 ///
 /// #### Safety
-/// - If non-NULL, `config_dir` must point to a valid NUL-terminated UTF-8 string.
+/// - If non-NULL, `config_dir` must point to a valid NUL-terminated string.
 ///
 /// ### 中文
 /// 设置 Servo 配置目录覆盖值（进程全局）。
@@ -228,12 +132,12 @@ pub unsafe extern "C" fn xian_web_engine_set_resources_dir(resources_dir: *const
 ///
 /// #### 返回
 /// - 值被接受则返回 `true`。
-/// - Servo 已初始化则返回 `false`。
+/// - Servo 已初始化或输入 UTF-8 无效则返回 `false`。
 ///
 /// #### 安全性
-/// - 若非 NULL，`config_dir` 必须指向有效的 NUL 结尾 UTF-8 字符串。
+/// - 若非 NULL，`config_dir` 必须指向有效的 NUL 结尾字符串。
 pub unsafe extern "C" fn xian_web_engine_set_config_dir(config_dir: *const c_char) -> bool {
-    match unsafe { cstr_to_str_opt(config_dir) } {
+    match unsafe { utf8_cstr_opt(config_dir) } {
         Ok(None) => crate::engine::set_config_dir(None),
         Ok(Some(path)) => crate::engine::set_config_dir(Some(PathBuf::from(path))),
         Err(_) => false,
@@ -484,7 +388,7 @@ pub extern "C" fn xian_web_engine_tick() -> u32 {
 /// #### 安全性
 /// - `config` 必须非空、对齐且可写（大小至少为 `XianWebEngineViewConfig`）。
 pub unsafe extern "C" fn xian_web_engine_view_config_init(config: *mut XianWebEngineViewConfig) {
-    if config.is_null() || !is_aligned_ptr(config) {
+    if config.is_null() || !is_aligned(config) {
         return;
     }
 
@@ -526,17 +430,18 @@ pub unsafe extern "C" fn xian_web_engine_view_config_init(config: *mut XianWebEn
 pub unsafe extern "C" fn xian_web_engine_view_create(
     config: *const XianWebEngineViewConfig,
 ) -> *mut XianWebEngineView {
-    let Some(config) = (unsafe { aligned_ref(config) }) else {
+    let Some(config) = (unsafe { ref_from_ptr(config) }) else {
         return ptr::null_mut();
     };
 
     let initial_url =
-        unsafe { cstr_to_str(config.initial_url) }.and_then(|url| url::Url::parse(url).ok());
+        unsafe { utf8_cstr(config.initial_url) }.and_then(|url| url::Url::parse(url).ok());
 
-    let params = ViewCreateParams {
+    let params = ViewParams {
         width: config.width,
         height: config.height,
         initial_url,
+        hidpi_scale_factor: config.hidpi_scale_factor,
     };
 
     match crate::engine::create_view(params) {
@@ -564,7 +469,7 @@ pub unsafe extern "C" fn xian_web_engine_view_create(
 /// #### 安全性
 /// - `view` 必须为 NULL，或由 `xian_web_engine_view_create` 返回的有效指针。
 pub unsafe extern "C" fn xian_web_engine_view_destroy(view: *mut XianWebEngineView) {
-    if view.is_null() || !is_aligned_ptr(view) {
+    if view.is_null() || !is_aligned(view) {
         return;
     }
     let view = unsafe { Box::from_raw(view) };
@@ -581,10 +486,11 @@ pub unsafe extern "C" fn xian_web_engine_view_destroy(view: *mut XianWebEngineVi
 ///
 /// #### Returns
 /// - `true` if the URL was accepted.
+/// - `false` on NULL/invalid input or parse failure.
 ///
 /// #### Safety
 /// - `view` must be either NULL, or a valid pointer returned by `xian_web_engine_view_create`.
-/// - If non-NULL, `url` must point to a valid NUL-terminated UTF-8 string.
+/// - If non-NULL, `url` must point to a valid NUL-terminated string.
 ///
 /// ### 中文
 /// 加载 URL。
@@ -595,18 +501,19 @@ pub unsafe extern "C" fn xian_web_engine_view_destroy(view: *mut XianWebEngineVi
 ///
 /// #### 返回
 /// - 返回 `true` 表示 URL 被接受。
+/// - 输入为 NULL/无效或解析失败时返回 `false`。
 ///
 /// #### 安全性
 /// - `view` 必须为 NULL，或由 `xian_web_engine_view_create` 返回的有效指针。
-/// - 若非 NULL，`url` 必须指向有效的 NUL 结尾 UTF-8 字符串。
+/// - 若非 NULL，`url` 必须指向有效的 NUL 结尾字符串。
 pub unsafe extern "C" fn xian_web_engine_view_load_url(
     view: *mut XianWebEngineView,
     url: *const c_char,
 ) -> bool {
-    let Some(view) = (unsafe { aligned_ref(view) }) else {
+    let Some(view) = (unsafe { ref_from_ptr(view) }) else {
         return false;
     };
-    let Some(url) = (unsafe { cstr_to_str(url) }) else {
+    let Some(url) = (unsafe { utf8_cstr(url) }) else {
         return false;
     };
     view.load_url(url)
@@ -639,10 +546,48 @@ pub unsafe extern "C" fn xian_web_engine_view_resize(
     width: u32,
     height: u32,
 ) {
-    let Some(view) = (unsafe { aligned_ref(view) }) else {
+    let Some(view) = (unsafe { ref_from_ptr(view) }) else {
         return;
     };
     view.resize(width, height);
+}
+
+#[unsafe(no_mangle)]
+/// ### English
+/// Sets the HiDPI scale factor for the view.
+///
+/// #### Parameters
+/// - `view`: View pointer.
+/// - `hidpi_scale_factor`: Scale factor (`1.0` means 1 CSS pixel = 1 device pixel).
+///
+/// #### Returns
+/// - `true` if the value was accepted.
+/// - `false` on NULL/invalid view, or when `hidpi_scale_factor` is non-finite or `<= 0`.
+///
+/// #### Safety
+/// - `view` must be either NULL, or a valid pointer returned by `xian_web_engine_view_create`.
+///
+/// ### 中文
+/// 设置该 view 的 HiDPI 缩放因子。
+///
+/// #### 参数
+/// - `view`：view 指针。
+/// - `hidpi_scale_factor`：缩放因子（`1.0` 表示 1 个 CSS 像素 = 1 个设备像素）。
+///
+/// #### 返回
+/// - 值被接受则返回 `true`。
+/// - view 为 NULL/无效，或 `hidpi_scale_factor` 非有限值/`<= 0` 时返回 `false`。
+///
+/// #### 安全性
+/// - `view` 必须为 NULL，或由 `xian_web_engine_view_create` 返回的有效指针。
+pub unsafe extern "C" fn xian_web_engine_view_set_hidpi_scale_factor(
+    view: *mut XianWebEngineView,
+    hidpi_scale_factor: f32,
+) -> bool {
+    let Some(view) = (unsafe { ref_from_ptr(view) }) else {
+        return false;
+    };
+    view.set_hidpi_scale_factor(hidpi_scale_factor)
 }
 
 #[unsafe(no_mangle)]
@@ -670,7 +615,7 @@ pub unsafe extern "C" fn xian_web_engine_view_resize(
 /// #### 安全性
 /// - `view` 必须为 NULL，或由 `xian_web_engine_view_create` 返回的有效指针。
 pub unsafe extern "C" fn xian_web_engine_view_texture_id(view: *const XianWebEngineView) -> u32 {
-    let Some(view) = (unsafe { aligned_ref(view) }) else {
+    let Some(view) = (unsafe { ref_from_ptr(view) }) else {
         return 0;
     };
     view.texture_id()
@@ -701,7 +646,7 @@ pub unsafe extern "C" fn xian_web_engine_view_texture_id(view: *const XianWebEng
 /// #### 安全性
 /// - `view` 必须为 NULL，或由 `xian_web_engine_view_create` 返回的有效指针。
 pub unsafe extern "C" fn xian_web_engine_view_needs_paint(view: *const XianWebEngineView) -> bool {
-    let Some(view) = (unsafe { aligned_ref(view) }) else {
+    let Some(view) = (unsafe { ref_from_ptr(view) }) else {
         return false;
     };
     view.needs_paint()
@@ -734,7 +679,7 @@ pub unsafe extern "C" fn xian_web_engine_view_needs_paint(view: *const XianWebEn
 /// #### 安全性
 /// - `view` 必须为 NULL，或由 `xian_web_engine_view_create` 返回的有效指针。
 pub unsafe extern "C" fn xian_web_engine_view_paint(view: *mut XianWebEngineView) -> bool {
-    let Some(view) = (unsafe { aligned_ref(view) }) else {
+    let Some(view) = (unsafe { ref_from_ptr(view) }) else {
         return false;
     };
     view.paint()
@@ -750,7 +695,7 @@ pub unsafe extern "C" fn xian_web_engine_view_paint(view: *mut XianWebEngineView
 /// - `count`: Number of elements in `events`.
 ///
 /// #### Returns
-/// - Number of events accepted.
+/// - Number of events forwarded to Servo (supported/converted).
 ///
 /// #### Safety
 /// - `view` must be either NULL, or a valid pointer returned by `xian_web_engine_view_create`.
@@ -765,7 +710,7 @@ pub unsafe extern "C" fn xian_web_engine_view_paint(view: *mut XianWebEngineView
 /// - `count`：`events` 中的元素数量。
 ///
 /// #### 返回
-/// - 被接受的事件数量。
+/// - 实际转发给 Servo 的事件数量（支持且完成转换的事件）。
 ///
 /// #### 安全性
 /// - `view` 必须为 NULL，或由 `xian_web_engine_view_create` 返回的有效指针。
@@ -775,13 +720,13 @@ pub unsafe extern "C" fn xian_web_engine_view_send_input_events(
     events: *const XianWebEngineInputEvent,
     count: u32,
 ) -> u32 {
-    let Some(view) = (unsafe { aligned_ref(view) }) else {
+    let Some(view) = (unsafe { ref_from_ptr(view) }) else {
         return 0;
     };
     if events.is_null() || count == 0 {
         return 0;
     }
-    if !is_aligned_ptr(events) {
+    if !is_aligned(events) {
         return 0;
     }
 
@@ -807,9 +752,8 @@ pub unsafe extern "C" fn xian_web_engine_view_send_input_events(
 ///
 /// #### 返回
 /// - 满足 `T` 对齐要求则返回 `true`。
-fn is_aligned_ptr<T>(ptr: *const T) -> bool {
+fn is_aligned<T>(ptr: *const T) -> bool {
     let align = mem::align_of::<T>();
-    debug_assert!(align.is_power_of_two());
     (ptr as usize) & (align - 1) == 0
 }
 
@@ -839,8 +783,8 @@ fn is_aligned_ptr<T>(ptr: *const T) -> bool {
 ///
 /// #### 安全性
 /// - 返回 `Some` 时，`ptr` 必须在该生命周期内对读取 `T` 有效。
-unsafe fn aligned_ref<'a, T>(ptr: *const T) -> Option<&'a T> {
-    if ptr.is_null() || !is_aligned_ptr(ptr) {
+unsafe fn ref_from_ptr<'a, T>(ptr: *const T) -> Option<&'a T> {
+    if ptr.is_null() || !is_aligned(ptr) {
         return None;
     }
     Some(unsafe { &*ptr })
@@ -878,7 +822,7 @@ unsafe fn aligned_ref<'a, T>(ptr: *const T) -> Option<&'a T> {
 ///
 /// #### 安全性
 /// - 若非 NULL，`ptr` 必须指向有效的 NUL 结尾字符串。
-unsafe fn cstr_to_str_opt<'a>(ptr: *const c_char) -> Result<Option<&'a str>, Utf8Error> {
+unsafe fn utf8_cstr_opt<'a>(ptr: *const c_char) -> Result<Option<&'a str>, Utf8Error> {
     if ptr.is_null() {
         return Ok(None);
     }
@@ -891,7 +835,7 @@ unsafe fn cstr_to_str_opt<'a>(ptr: *const c_char) -> Result<Option<&'a str>, Utf
 /// ### English
 /// Converts a C string pointer into an optional non-empty UTF-8 `&str`.
 ///
-/// This is a lossy wrapper over `cstr_to_str_opt`: invalid UTF-8 becomes `None`.
+/// This is a lossy wrapper over `utf8_cstr_opt`: invalid UTF-8 becomes `None`.
 ///
 /// #### Parameters
 /// - `ptr`: NUL-terminated C string pointer.
@@ -906,7 +850,7 @@ unsafe fn cstr_to_str_opt<'a>(ptr: *const c_char) -> Result<Option<&'a str>, Utf
 /// ### 中文
 /// 将 C 字符串指针转换为“非空”的 UTF-8 `&str`。
 ///
-/// 这是 `cstr_to_str_opt` 的有损封装：无效 UTF-8 会被视为 `None`。
+/// 这是 `utf8_cstr_opt` 的有损封装：无效 UTF-8 会被视为 `None`。
 ///
 /// #### 参数
 /// - `ptr`：NUL 结尾的 C 字符串指针。
@@ -917,8 +861,8 @@ unsafe fn cstr_to_str_opt<'a>(ptr: *const c_char) -> Result<Option<&'a str>, Utf
 ///
 /// #### 安全性
 /// - 若非 NULL，`ptr` 必须指向有效的 NUL 结尾字符串。
-unsafe fn cstr_to_str<'a>(ptr: *const c_char) -> Option<&'a str> {
-    unsafe { cstr_to_str_opt(ptr) }.ok().flatten()
+unsafe fn utf8_cstr<'a>(ptr: *const c_char) -> Option<&'a str> {
+    unsafe { utf8_cstr_opt(ptr) }.ok().flatten()
 }
 
 #[inline]
@@ -947,7 +891,7 @@ unsafe fn cstr_to_str<'a>(ptr: *const c_char) -> Option<&'a str> {
 ///
 /// #### 安全性
 /// - 若非 NULL，`ptr` 必须指向有效的 NUL 结尾字符串。
-unsafe fn cstr_to_path(ptr: *const c_char) -> Option<PathBuf> {
-    let s = unsafe { cstr_to_str(ptr)? };
+unsafe fn utf8_cstr_path(ptr: *const c_char) -> Option<PathBuf> {
+    let s = unsafe { utf8_cstr(ptr)? };
     Some(PathBuf::from(s))
 }

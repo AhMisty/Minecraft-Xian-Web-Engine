@@ -24,7 +24,7 @@ C ABI 版本：`1`（`xian_web_engine_abi_version()`）。
 5. （可选）设置 OpenGL API：`xian_web_engine_set_gl_api(XIAN_WEB_ENGINE_GL_API_GL / XIAN_WEB_ENGINE_GL_API_GLES)`
 6. （可选）设置 assume-current：`xian_web_engine_set_assume_context_current(0/1)`
 7. （可选）设置 AUTO_PAINT：`xian_web_engine_set_auto_paint(0/1)`
-8. 创建 view：`xian_web_engine_view_config_init(&vcfg)` -> `view = xian_web_engine_view_create(&vcfg)`
+8. 创建 view：`xian_web_engine_view_config_init(&vcfg)`（可选：设置 `vcfg.hidpi_scale_factor`；运行期可用 `xian_web_engine_view_set_hidpi_scale_factor(view, scale)` 更新）-> `view = xian_web_engine_view_create(&vcfg)`
 9. 每帧调用：`xian_web_engine_tick()`（同一线程；且 `glfw_window` 的上下文已 current）
 10. 获取纹理：`tex = xian_web_engine_view_texture_id(view)` 并在宿主渲染
 11. 输入事件：`xian_web_engine_view_send_input_events(view, events, count)`
@@ -58,6 +58,12 @@ C ABI 版本：`1`（`xian_web_engine_abi_version()`）。
 
 - `xian_web_engine_set_resources_dir`：进程全局（建议在创建首个 view 前调用）
 - `xian_web_engine_set_config_dir / xian_web_engine_set_thread_pool_cap / xian_web_engine_set_glfw_context / xian_web_engine_set_gl_api / xian_web_engine_set_assume_context_current / xian_web_engine_set_auto_paint`：进程全局（必须在创建首个 view 前调用；Servo 初始化后不可再改）
+
+### 5) OpenGL 状态约定（重要）
+
+- 为获得最高性能，本库**不会**保存/恢复任何 OpenGL 状态
+- 调用 `xian_web_engine_tick()`（AUTO_PAINT=1 时）/ `xian_web_engine_view_paint()` 期间，Servo/WebRender 会改动大量 GL 状态；至少包含：FBO 绑定、viewport、VAO 绑定等（且不保证仅限于这些）
+- 宿主必须自行保证：调用后重新设置自己渲染所需的 GL 状态；推荐将这些调用放在每帧你设置/绑定自身渲染状态之前（例如帧开始）
 
 ---
 
@@ -101,7 +107,7 @@ typedef struct XianWebEngineGlfwApi {
 typedef struct XianWebEngineViewConfig {
   uint32_t width;
   uint32_t height;
-  float hidpi_scale_factor; // currently ignored (reserved)
+  float hidpi_scale_factor; // 1.0 = 1 CSS px -> 1 device px (non-finite/<=0 treated as 1.0)
   const char* initial_url;  // optional, NUL-terminated UTF-8
 } XianWebEngineViewConfig;
 
@@ -149,6 +155,7 @@ void xian_web_engine_view_destroy(XianWebEngineView* view);
 
 bool xian_web_engine_view_load_url(XianWebEngineView* view, const char* url);
 void xian_web_engine_view_resize(XianWebEngineView* view, uint32_t width, uint32_t height);
+bool xian_web_engine_view_set_hidpi_scale_factor(XianWebEngineView* view, float hidpi_scale_factor);
 
 uint32_t xian_web_engine_view_texture_id(const XianWebEngineView* view);
 bool xian_web_engine_view_needs_paint(const XianWebEngineView* view);
