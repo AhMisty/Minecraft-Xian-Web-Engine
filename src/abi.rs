@@ -24,7 +24,7 @@ use std::ptr;
 ///
 /// ### 中文
 /// C ABI 版本号。
-pub(crate) const XIAN_WEB_ENGINE_ABI_VERSION: u32 = 2;
+pub(crate) const XIAN_WEB_ENGINE_ABI_VERSION: u32 = 1;
 
 /// ### English
 /// OpenGL API kind (desktop OpenGL).

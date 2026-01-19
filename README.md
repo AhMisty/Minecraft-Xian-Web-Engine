@@ -4,7 +4,7 @@
 
 `xian_web_engine` 输出一个 `cdylib`（库名：`xian_web_engine`），对外只暴露 C ABI。
 
-C ABI 版本：`2`（`xian_web_engine_abi_version()`）。
+C ABI 版本：`1`（`xian_web_engine_abi_version()`）。
 
 本版本已“完全重写”工作模型：
 
@@ -78,7 +78,7 @@ typedef struct XianWebEngineView XianWebEngineView;
 
 // --- constants ---
 
-#define XIAN_WEB_ENGINE_ABI_VERSION 2u
+#define XIAN_WEB_ENGINE_ABI_VERSION 1u
 
 #define XIAN_WEB_ENGINE_GL_API_GL   1u
 #define XIAN_WEB_ENGINE_GL_API_GLES 2u
@@ -169,7 +169,7 @@ uint32_t xian_web_engine_view_send_input_events(
 
 `xian_web_engine` builds a `cdylib` (library name: `xian_web_engine`) and exposes a pure C ABI.
 
-C ABI version: `2` (`xian_web_engine_abi_version()`).
+C ABI version: `1` (`xian_web_engine_abi_version()`).
 
 This version is a full rewrite with a new high-performance model:
 
