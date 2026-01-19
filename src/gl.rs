@@ -1,8 +1,14 @@
 //! ### English
-//! OpenGL glue: external GLFW context + offscreen framebuffer rendering context for Servo.
+//! OpenGL glue for this embedder.
+//!
+//! - Loads OpenGL entry points via `glfwGetProcAddress`.
+//! - Provides a texture-backed offscreen framebuffer used as Servo's render target.
 //!
 //! ### 中文
-//! OpenGL 粘合层：外部 GLFW 上下文 + Servo 使用的离屏 FBO 渲染上下文。
+//! 本嵌入层的 OpenGL 粘合层。
+//!
+//! - 通过 `glfwGetProcAddress` 加载 OpenGL 入口。
+//! - 提供一个基于纹理的离屏帧缓冲，用作 Servo 的渲染目标。
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::ffi::{CString, c_char, c_void};
@@ -75,13 +81,6 @@ impl GlApi {
 /// 本嵌入层使用的 `glfwGetProcAddress` 函数签名。
 type GlfwGetProcAddressFn = unsafe extern "C" fn(*const c_char) -> *const c_void;
 
-/// ### English
-/// `glfwMakeContextCurrent` function signature used by this embedder.
-///
-/// ### 中文
-/// 本嵌入层使用的 `glfwMakeContextCurrent` 函数签名。
-type GlfwMakeContextCurrentFn = unsafe extern "C" fn(*mut c_void);
-
 thread_local! {
     /// ### English
     /// Thread-local Surfman `Connection` cache (created lazily).
@@ -133,109 +132,55 @@ unsafe fn fn_from_addr<T>(addr: usize, name: &'static str) -> Result<T, InitErro
 
 #[derive(Clone, Copy)]
 /// ### English
-/// Minimal GLFW context + proc table wrapper used for OpenGL function loading and context binding.
+/// Minimal OpenGL symbol loader backed by `glfwGetProcAddress`.
+///
+/// #### Threading
+/// - Must be used on the same thread where the target OpenGL context is current.
 ///
 /// ### 中文
-/// 用于 OpenGL 函数加载与上下文绑定的最小 GLFW 上下文 + 函数表封装。
-pub(crate) struct GlfwContext {
-    /// ### English
-    /// Pointer to embedder-owned `GLFWwindow*`.
-    ///
-    /// ### 中文
-    /// 宿主侧 `GLFWwindow*` 指针。
-    window: *mut c_void,
-
+/// 基于 `glfwGetProcAddress` 的最小 OpenGL 符号加载器。
+///
+/// #### 线程
+/// - 必须在目标 OpenGL 上下文为 current 的同一线程使用。
+pub(crate) struct GlProcLoader {
     /// ### English
     /// `glfwGetProcAddress` entry point.
     ///
     /// ### 中文
     /// `glfwGetProcAddress` 入口。
     get_proc_address: GlfwGetProcAddressFn,
-
-    /// ### English
-    /// Optional `glfwMakeContextCurrent` entry point.
-    ///
-    /// When "assume current" is enabled, this is stored as `None` and all calls become no-ops.
-    ///
-    /// ### 中文
-    /// 可选的 `glfwMakeContextCurrent` 入口。
-    ///
-    /// 当启用“假定 current”时该字段为 `None`，相关调用将变为 no-op。
-    make_context_current: Option<GlfwMakeContextCurrentFn>,
 }
 
-impl GlfwContext {
+impl GlProcLoader {
     /// ### English
-    /// Creates a `GlfwContext` from raw function pointer addresses.
+    /// Creates a `GlProcLoader` from a raw function pointer address.
     ///
     /// #### Parameters
-    /// - `window`: Embedder-owned `GLFWwindow*`.
     /// - `glfw_get_proc_address`: Address of `glfwGetProcAddress` (as `uintptr_t`).
-    /// - `glfw_make_context_current`: Address of `glfwMakeContextCurrent` (as `uintptr_t`, required when `assume_current == false`).
-    /// - `assume_current`: Whether to skip calling `glfwMakeContextCurrent` on hot paths.
     ///
     /// #### Returns
-    /// - `Ok(GlfwContext)` on success.
-    /// - `Err(InitError)` if required function pointers are missing.
+    /// - `Ok(GlProcLoader)` when the pointer is non-zero.
+    /// - `Err(InitError)` when the pointer is missing.
     ///
     /// #### Safety
-    /// - `window` must be a valid `GLFWwindow*` for the embedder.
-    /// - Function pointer addresses must match the declared signatures.
+    /// - The address must be a valid function pointer whose signature matches `glfwGetProcAddress`.
     ///
     /// ### 中文
-    /// 由原始函数指针地址创建 `GlfwContext`。
+    /// 由原始函数指针地址创建 `GlProcLoader`。
     ///
     /// #### 参数
-    /// - `window`：宿主侧 `GLFWwindow*`。
     /// - `glfw_get_proc_address`：`glfwGetProcAddress` 的地址（`uintptr_t`）。
-    /// - `glfw_make_context_current`：`glfwMakeContextCurrent` 的地址（`uintptr_t`；当 `assume_current == false` 时必须提供）。
-    /// - `assume_current`：是否在热路径上跳过 `glfwMakeContextCurrent`。
     ///
     /// #### 返回
-    /// - 成功返回 `Ok(GlfwContext)`。
-    /// - 必需函数指针缺失时返回 `Err(InitError)`。
+    /// - 指针非 0 时返回 `Ok(GlProcLoader)`。
+    /// - 指针缺失时返回 `Err(InitError)`。
     ///
     /// #### 安全性
-    /// - `window` 必须是宿主侧有效的 `GLFWwindow*`。
-    /// - 函数指针地址必须与声明的签名一致。
-    pub(crate) unsafe fn from_raw(
-        window: *mut c_void,
-        glfw_get_proc_address: usize,
-        glfw_make_context_current: usize,
-        assume_current: bool,
-    ) -> Result<Self, InitError> {
+    /// - 地址必须是有效的函数指针，且其签名必须与 `glfwGetProcAddress` 一致。
+    pub(crate) unsafe fn from_raw(glfw_get_proc_address: usize) -> Result<Self, InitError> {
         let get_proc_address: GlfwGetProcAddressFn =
             unsafe { fn_from_addr(glfw_get_proc_address, "glfwGetProcAddress")? };
-        let make_context_current: Option<GlfwMakeContextCurrentFn> = if assume_current {
-            None
-        } else {
-            Some(unsafe { fn_from_addr(glfw_make_context_current, "glfwMakeContextCurrent")? })
-        };
-        Ok(Self {
-            window,
-            get_proc_address,
-            make_context_current,
-        })
-    }
-
-    /// ### English
-    /// Makes the embedder context current (unless "assume current" is enabled).
-    ///
-    /// #### Safety
-    /// - Must be called on the thread that is allowed to make the context current.
-    /// - The `window` pointer must remain valid.
-    ///
-    /// ### 中文
-    /// 将宿主上下文设为 current（除非启用“假定 current”）。
-    ///
-    /// #### 安全性
-    /// - 必须在允许切换上下文的线程调用。
-    /// - `window` 指针必须保持有效。
-    pub(crate) unsafe fn make_current(&self) {
-        let Some(make_current) = self.make_context_current else {
-            return;
-        };
-        unsafe { make_current(self.window) };
+        Ok(Self { get_proc_address })
     }
 
     /// ### English
@@ -300,7 +245,7 @@ impl GlHandles {
     ///
     /// #### Parameters
     /// - `gl_api`: GL vs GLES selection.
-    /// - `glfw`: GLFW proc table used for function lookup.
+    /// - `loader`: OpenGL symbol loader used for function lookup.
     ///
     /// #### Returns
     /// - `Ok(GlHandles)` when loading succeeded.
@@ -310,11 +255,11 @@ impl GlHandles {
     /// - The OpenGL context must be current before calling.
     ///
     /// ### 中文
-    /// 使用 GLFW 函数表为 Gleam 与 Glow 加载 OpenGL 函数指针。
+    /// 使用函数加载器为 Gleam 与 Glow 加载 OpenGL 函数指针。
     ///
     /// #### 参数
     /// - `gl_api`：GL 与 GLES 选择。
-    /// - `glfw`：用于函数查找的 GLFW 函数表。
+    /// - `loader`：用于符号查找的 OpenGL 函数加载器。
     ///
     /// #### 返回
     /// - 加载成功返回 `Ok(GlHandles)`。
@@ -322,14 +267,15 @@ impl GlHandles {
     ///
     /// #### 安全性
     /// - 调用前 OpenGL 上下文必须已 current。
-    pub(crate) unsafe fn new(gl_api: GlApi, glfw: &GlfwContext) -> Result<Self, InitError> {
-        validate_gl_entry_points(glfw)?;
+    pub(crate) unsafe fn new(gl_api: GlApi, loader: &GlProcLoader) -> Result<Self, InitError> {
+        validate_gl_entry_points(loader)?;
         let gleam_gl: Rc<dyn Gl> = match gl_api {
-            GlApi::Gl => unsafe { gl::GlFns::load_with(|s| glfw.load(s) as *const _) },
-            GlApi::Gles => unsafe { gl::GlesFns::load_with(|s| glfw.load(s) as *const _) },
+            GlApi::Gl => unsafe { gl::GlFns::load_with(|s| loader.load(s) as *const _) },
+            GlApi::Gles => unsafe { gl::GlesFns::load_with(|s| loader.load(s) as *const _) },
         };
 
-        let glow_gl = unsafe { glow::Context::from_loader_function(|s| glfw.load(s) as *const _) };
+        let glow_gl =
+            unsafe { glow::Context::from_loader_function(|s| loader.load(s) as *const _) };
 
         Ok(Self {
             gleam_gl,
@@ -344,7 +290,7 @@ impl GlHandles {
 /// This is a best-effort sanity check to fail fast before calling into NULL function pointers.
 ///
 /// #### Parameters
-/// - `glfw`: Embedder context handle used for symbol lookup.
+/// - `loader`: OpenGL function loader used for symbol lookup.
 ///
 /// #### Returns
 /// - `Ok(())` when all required symbols are available.
@@ -356,12 +302,12 @@ impl GlHandles {
 /// 这是一个 best-effort 的快速健全性检查，用于在调用到 NULL 函数指针前尽早失败。
 ///
 /// #### 参数
-/// - `glfw`：用于符号查找的宿主上下文句柄。
+/// - `loader`：用于符号查找的函数加载器。
 ///
 /// #### 返回
 /// - 全部必需符号可用时返回 `Ok(())`。
 /// - 任意必需符号缺失时返回 `Err(InitError)`。
-fn validate_gl_entry_points(glfw: &GlfwContext) -> Result<(), InitError> {
+fn validate_gl_entry_points(loader: &GlProcLoader) -> Result<(), InitError> {
     const REQUIRED: &[&str] = &[
         "glGenFramebuffers",
         "glBindFramebuffer",
@@ -383,7 +329,7 @@ fn validate_gl_entry_points(glfw: &GlfwContext) -> Result<(), InitError> {
     ];
 
     for &name in REQUIRED {
-        if glfw.load(name).is_null() {
+        if loader.load(name).is_null() {
             return Err(InitError::MissingOpenGlEntryPoint { name });
         }
     }
@@ -502,6 +448,7 @@ impl Framebuffer {
             gl::RENDERBUFFER,
             renderbuffer_id,
         );
+        gl.bind_renderbuffer(gl::RENDERBUFFER, 0);
 
         Self {
             gl,
@@ -509,6 +456,47 @@ impl Framebuffer {
             renderbuffer_id,
             texture_id,
         }
+    }
+
+    /// ### English
+    /// Resizes this framebuffer's attachments in place.
+    ///
+    /// This keeps the framebuffer/texture ids stable while reallocating storage.
+    ///
+    /// #### Parameters
+    /// - `size`: New size in physical pixels (must be >= 1 in both dimensions).
+    ///
+    /// ### 中文
+    /// 原地调整该帧缓冲的附件尺寸。
+    ///
+    /// 该方式不会删除/重建 GL 对象，因此 framebuffer/texture id 保持不变；仅通过重新分配存储来改变尺寸。
+    ///
+    /// #### 参数
+    /// - `size`：新尺寸（物理像素；两个维度都必须 >= 1）。
+    fn resize(&mut self, size: PhysicalSize<u32>) {
+        self.gl.bind_texture(gl::TEXTURE_2D, self.texture_id);
+        self.gl.tex_image_2d(
+            gl::TEXTURE_2D,
+            0,
+            gl::RGBA as gl::GLint,
+            size.width as gl::GLsizei,
+            size.height as gl::GLsizei,
+            0,
+            gl::RGBA,
+            gl::UNSIGNED_BYTE,
+            None,
+        );
+        self.gl.bind_texture(gl::TEXTURE_2D, 0);
+
+        self.gl
+            .bind_renderbuffer(gl::RENDERBUFFER, self.renderbuffer_id);
+        self.gl.renderbuffer_storage(
+            gl::RENDERBUFFER,
+            gl::DEPTH_COMPONENT24,
+            size.width as gl::GLsizei,
+            size.height as gl::GLsizei,
+        );
+        self.gl.bind_renderbuffer(gl::RENDERBUFFER, 0);
     }
 
     /// ### English
@@ -590,7 +578,6 @@ impl Drop for Framebuffer {
     /// ### 中文
     /// 删除该帧缓冲持有的 GL 对象。
     fn drop(&mut self) {
-        self.gl.bind_framebuffer(gl::FRAMEBUFFER, 0);
         self.gl.delete_textures(&[self.texture_id]);
         self.gl.delete_renderbuffers(&[self.renderbuffer_id]);
         self.gl.delete_framebuffers(&[self.framebuffer_id]);
@@ -608,13 +595,6 @@ impl Drop for Framebuffer {
 ///
 /// 每个实例持有一套 FBO + RGBA 纹理，并支持 resize。
 pub(crate) struct TextureContext {
-    /// ### English
-    /// GLFW proc table used for making context current and loading functions.
-    ///
-    /// ### 中文
-    /// 用于切换上下文与加载函数的 GLFW 函数表。
-    glfw: GlfwContext,
-
     /// ### English
     /// Current size in physical pixels.
     ///
@@ -656,7 +636,6 @@ impl TextureContext {
     /// Creates a new texture-backed rendering context.
     ///
     /// #### Parameters
-    /// - `glfw`: GLFW proc table for the embedder context.
     /// - `gl`: Shared GL API handles.
     /// - `size`: Initial size (clamped by caller to >= 1).
     /// - `refresh_driver`: Optional refresh driver for frame scheduling.
@@ -668,7 +647,6 @@ impl TextureContext {
     /// 创建一个基于纹理的渲染上下文。
     ///
     /// #### 参数
-    /// - `glfw`：宿主上下文的 GLFW 函数表。
     /// - `gl`：共享 GL API 句柄。
     /// - `size`：初始尺寸（调用方需保证 >= 1）。
     /// - `refresh_driver`：可选刷新驱动，用于帧调度。
@@ -676,14 +654,12 @@ impl TextureContext {
     /// #### 返回
     /// - 新的 `TextureContext` 实例。
     pub(crate) fn new(
-        glfw: GlfwContext,
         gl: GlHandles,
         size: PhysicalSize<u32>,
         refresh_driver: Option<Rc<dyn servo::RefreshDriver>>,
     ) -> Self {
         let framebuffer = RefCell::new(Framebuffer::new(gl.gleam_gl.clone(), size));
         Self {
-            glfw,
             size: Cell::new(size),
             framebuffer,
             gleam_gl: gl.gleam_gl,
@@ -696,7 +672,7 @@ impl TextureContext {
     /// Returns the OpenGL texture id of the color attachment.
     ///
     /// #### Notes
-    /// - The texture id may change after `resize` (framebuffer is recreated to match Servo behavior).
+    /// - The texture id is stable across `resize` (attachments are resized in place).
     ///
     /// #### Returns
     /// - OpenGL texture id.
@@ -705,7 +681,7 @@ impl TextureContext {
     /// 返回颜色附件的 OpenGL 纹理 id。
     ///
     /// #### 说明
-    /// - 纹理 id 可能在 `resize` 后变化（为对齐 Servo 行为会重建帧缓冲）。
+    /// - `resize` 过程中会原地调整附件尺寸，因此纹理 id 保持不变。
     ///
     /// #### 返回
     /// - OpenGL 纹理 id。
@@ -779,7 +755,7 @@ impl servo::RenderingContext for TextureContext {
             return;
         }
 
-        *self.framebuffer.borrow_mut() = Framebuffer::new(self.gleam_gl.clone(), size);
+        self.framebuffer.borrow_mut().resize(size);
         self.size.set(size);
     }
 
@@ -817,19 +793,29 @@ impl servo::RenderingContext for TextureContext {
     }
 
     /// ### English
-    /// Ensures the embedder context is current.
+    /// Makes the embedder OpenGL context current (hook for Servo).
+    ///
+    /// Servo may call this before issuing GL commands. This embedder does not manage context
+    /// switching for performance and simplicity: the host must keep the target OpenGL context
+    /// current for the entire duration of every ABI call (`tick`/`paint`/`resize`/etc.).
+    ///
+    /// Therefore this implementation is intentionally a no-op.
     ///
     /// #### Returns
-    /// - `Ok(())` when the context is current (or assumed current).
+    /// - Always returns `Ok(())`.
     ///
     /// ### 中文
-    /// 确保宿主上下文为 current。
+    /// 令宿主 OpenGL 上下文变为 current（Servo 的回调钩子）。
+    ///
+    /// Servo 可能会在发起 GL 调用前调用该方法。本嵌入层为追求极致性能与简单性，不负责上下文切换：
+    /// 宿主必须保证在每一次 ABI 调用（`tick`/`paint`/`resize` 等）的整个执行期间，目标 OpenGL 上下文始终为 current。
+    ///
+    /// 因此本实现刻意为 no-op。
     ///
     /// #### 返回
-    /// - 上下文为 current（或被假定为 current）时返回 `Ok(())`。
+    /// - 始终返回 `Ok(())`。
     ///
     fn make_current(&self) -> Result<(), Error> {
-        unsafe { self.glfw.make_current() };
         Ok(())
     }
 

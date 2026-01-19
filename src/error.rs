@@ -34,6 +34,19 @@ pub(crate) enum InitError {
     ServoAlreadyInitialized,
 
     /// ### English
+    /// The engine has not been initialized on this thread.
+    ///
+    /// #### Notes
+    /// - The embedder must call the explicit init entry point before creating views.
+    ///
+    /// ### 中文
+    /// 该线程尚未初始化引擎。
+    ///
+    /// #### 说明
+    /// - 宿主必须先调用显式初始化入口，然后才能创建 view。
+    EngineNotInitialized,
+
+    /// ### English
     /// Unsupported OpenGL API selector from the C ABI.
     ///
     /// #### Fields
@@ -71,17 +84,4 @@ pub(crate) enum InitError {
     /// #### 字段
     /// - `name`：入口函数名。
     MissingOpenGlEntryPoint { name: &'static str },
-
-    /// ### English
-    /// Internal invariant violated (this indicates a bug).
-    ///
-    /// #### Fields
-    /// - `name`: Invariant name for diagnostics.
-    ///
-    /// ### 中文
-    /// 内部不变量被破坏（这通常意味着 bug）。
-    ///
-    /// #### 字段
-    /// - `name`：不变量名称（用于诊断定位）。
-    InternalInvariant { name: &'static str },
 }

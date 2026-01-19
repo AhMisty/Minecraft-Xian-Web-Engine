@@ -42,8 +42,6 @@ use crate::abi::{
 /// - `Some(InputEvent)`：支持并完成转换。
 /// - `None`：未知或不支持的 `kind`。
 pub(crate) fn map_input_event(event: &XianWebEngineInputEvent) -> Option<InputEvent> {
-    let modifiers = modifiers_from_mask(event.modifiers);
-
     match event.kind {
         XIAN_WEB_ENGINE_INPUT_KIND_MOUSE_MOVE => {
             let point = event_point(event);
@@ -80,6 +78,7 @@ pub(crate) fn map_input_event(event: &XianWebEngineInputEvent) -> Option<InputEv
             )))
         }
         XIAN_WEB_ENGINE_INPUT_KIND_KEY => {
+            let modifiers = modifiers_from_mask(event.modifiers);
             let state = if event.key_state == 0 {
                 KeyState::Down
             } else {

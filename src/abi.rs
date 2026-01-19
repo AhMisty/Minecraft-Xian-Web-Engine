@@ -24,7 +24,7 @@ use std::ptr;
 ///
 /// ### 中文
 /// C ABI 版本号。
-pub(crate) const XIAN_WEB_ENGINE_ABI_VERSION: u32 = 1;
+pub(crate) const XIAN_WEB_ENGINE_ABI_VERSION: u32 = 2;
 
 /// ### English
 /// OpenGL API kind (desktop OpenGL).
@@ -116,15 +116,6 @@ pub struct XianWebEngineGlfwApi {
     /// ### 中文
     /// `glfwGetProcAddress` 函数指针。
     pub glfw_get_proc_address: usize,
-
-    /// ### English
-    /// `glfwMakeContextCurrent` function pointer (optional when assuming current context).
-    ///
-    /// Signature (C): `void glfwMakeContextCurrent(GLFWwindow* window)`.
-    ///
-    /// ### 中文
-    /// `glfwMakeContextCurrent` 函数指针（在“假定 current”模式下可选）。
-    pub glfw_make_context_current: usize,
 }
 
 #[repr(C)]

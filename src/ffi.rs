@@ -4,9 +4,10 @@
 //! ABI structs/constants are defined in `crate::abi`.
 //!
 //! Threading model (for performance):
-//! - All functions must be called on the same thread that owns the provided GLFW OpenGL context.
+//! - All functions must be called on the same thread where the target OpenGL context is current.
 //! - This crate does not spawn a dedicated "Servo thread".
 //! - The embedder drives Servo by calling `xian_web_engine_tick(...)` regularly (e.g. once per frame).
+//! - The embedder must call `xian_web_engine_init()` once on that thread before creating views.
 //!
 //! Rendering model (for performance):
 //! - Servo renders into per-view OpenGL textures created in the embedder's context.
@@ -22,9 +23,10 @@
 //! ABI 结构体/常量定义在 `crate::abi`。
 //!
 //! 线程模型（为性能而设计）：
-//! - 所有函数必须在同一线程调用，并且该线程持有并绑定（current）传入的 GLFW OpenGL 上下文。
+//! - 所有函数必须在同一线程调用，并且目标 OpenGL 上下文在该线程已绑定（current）。
 //! - 本库不再创建独立的“Servo 线程”。
 //! - 宿主通过定期调用 `xian_web_engine_tick(...)`（例如每帧一次）来驱动 Servo。
+//! - 宿主必须先在该线程调用一次 `xian_web_engine_init()`，然后才能创建 view。
 //!
 //! 渲染模型（为性能而设计）：
 //! - Servo 渲染到“宿主上下文中创建的、每个 view 独立的 OpenGL 纹理”。
@@ -34,7 +36,7 @@
 //! - 本库不会保存/恢复任何 OpenGL 状态。
 //! - 调用 ABI（例如 `tick`/`paint`）后，宿主必须自行恢复自身渲染所需的 GL 状态。
 
-use std::ffi::{CStr, c_char, c_void};
+use std::ffi::{CStr, c_char};
 use std::path::PathBuf;
 use std::str::Utf8Error;
 use std::{mem, ptr};
@@ -43,7 +45,7 @@ use crate::abi::{
     XIAN_WEB_ENGINE_ABI_VERSION, XIAN_WEB_ENGINE_GL_API_GL, XIAN_WEB_ENGINE_GL_API_GLES,
     XianWebEngineGlfwApi, XianWebEngineInputEvent, XianWebEngineViewConfig,
 };
-use crate::engine::{ViewParams, XianWebEngineView};
+use crate::engine::{View, ViewConfig};
 
 #[unsafe(no_mangle)]
 /// ### English
@@ -66,7 +68,7 @@ pub extern "C" fn xian_web_engine_abi_version() -> u32 {
 /// Installs a directory-based Servo `ResourceReader` (process-global).
 ///
 /// This is not tied to any engine instance. Call it once at startup (before Servo is initialized,
-/// i.e. before the first successful `xian_web_engine_view_create`) if you want Servo's built-in
+/// i.e. before the first successful `xian_web_engine_init`) if you want Servo's built-in
 /// resources (net error pages, placeholders, etc.) to be loadable.
 ///
 /// #### Parameters
@@ -83,7 +85,7 @@ pub extern "C" fn xian_web_engine_abi_version() -> u32 {
 /// 安装一个基于目录的 Servo `ResourceReader`（进程全局）。
 ///
 /// 该设置不与 engine 实例绑定，建议在应用启动时（Servo 初始化之前，即首次成功调用
-/// `xian_web_engine_view_create` 之前）设置，以便 Servo 能正常读取内置资源（网络错误页、占位图等）。
+/// `xian_web_engine_init` 之前）设置，以便 Servo 能正常读取内置资源（网络错误页、占位图等）。
 ///
 /// #### 参数
 /// - `resources_dir`：NUL 结尾的 UTF-8 目录路径。
@@ -174,12 +176,11 @@ pub extern "C" fn xian_web_engine_set_thread_pool_cap(thread_pool_cap: u32) -> b
 
 #[unsafe(no_mangle)]
 /// ### English
-/// Sets the embedder-provided GLFW context + proc table (process-global).
+/// Sets the embedder-provided GLFW function table (process-global).
 ///
 /// This must be called before Servo is initialized.
 ///
 /// #### Parameters
-/// - `glfw_window`: Embedder-owned `GLFWwindow*`.
 /// - `glfw_api`: Minimal GLFW function table.
 ///
 /// #### Returns
@@ -187,19 +188,17 @@ pub extern "C" fn xian_web_engine_set_thread_pool_cap(thread_pool_cap: u32) -> b
 /// - `false` if Servo is already initialized or required pointers are missing.
 ///
 /// #### Threading
-/// - All ABI calls must happen on the same thread that owns this OpenGL context.
+/// - All ABI calls must happen on the same thread where the target OpenGL context is current.
 ///
 /// #### Safety
-/// - `glfw_window` must remain valid for the lifetime of the engine.
 /// - `glfw_api` function pointers must match the documented signatures.
 ///
 /// ### 中文
-/// 设置宿主提供的 GLFW 上下文与函数表（进程全局）。
+/// 设置宿主提供的 GLFW 函数表（进程全局）。
 ///
 /// 必须在 Servo 初始化之前调用。
 ///
 /// #### 参数
-/// - `glfw_window`：宿主侧 `GLFWwindow*`。
 /// - `glfw_api`：最小 GLFW 函数表。
 ///
 /// #### 返回
@@ -207,26 +206,15 @@ pub extern "C" fn xian_web_engine_set_thread_pool_cap(thread_pool_cap: u32) -> b
 /// - Servo 已初始化或必需指针缺失则返回 `false`。
 ///
 /// #### 线程
-/// - 所有 ABI 调用必须发生在拥有该 OpenGL 上下文的同一线程。
+/// - 所有 ABI 调用必须发生在目标 OpenGL 上下文为 current 的同一线程。
 ///
 /// #### 安全性
-/// - `glfw_window` 必须在引擎生命周期内保持有效。
 /// - `glfw_api` 中的函数指针必须与声明的签名一致。
-pub extern "C" fn xian_web_engine_set_glfw_context(
-    glfw_window: *mut c_void,
-    glfw_api: XianWebEngineGlfwApi,
-) -> bool {
-    if glfw_window.is_null() {
-        return false;
-    }
+pub extern "C" fn xian_web_engine_set_glfw_api(glfw_api: XianWebEngineGlfwApi) -> bool {
     if glfw_api.glfw_get_proc_address == 0 {
         return false;
     }
-    crate::engine::set_glfw_context(
-        glfw_window,
-        glfw_api.glfw_get_proc_address,
-        glfw_api.glfw_make_context_current,
-    )
+    crate::engine::set_glfw_api(glfw_api.glfw_get_proc_address)
 }
 
 #[unsafe(no_mangle)]
@@ -264,104 +252,53 @@ pub extern "C" fn xian_web_engine_set_gl_api(gl_api: u32) -> bool {
 
 #[unsafe(no_mangle)]
 /// ### English
-/// Sets whether to assume the GLFW context is already current (`0`/`1`, process-global).
+/// Initializes the engine explicitly on the calling thread.
 ///
-/// When set to `1` (default), this crate will NOT call `glfwMakeContextCurrent` for maximum
-/// performance; the embedder must ensure the context is current before calling into the ABI.
-///
-/// This must be called before Servo is initialized.
-///
-/// #### Parameters
-/// - `assume_context_current`: `0` or non-zero.
+/// This function initializes Servo and loads OpenGL entry points. The embedder must ensure the
+/// target OpenGL context is current before calling.
 ///
 /// #### Returns
-/// - `true` if the value was accepted.
-/// - `false` if Servo is already initialized.
+/// - `true` on success (or when already initialized on this thread).
+/// - `false` on failure.
+///
+/// #### Threading
+/// - All ABI calls must happen on the same thread where the OpenGL context is current.
 ///
 /// ### 中文
-/// 设置是否假定 GLFW 上下文已为 current（`0`/`1`，进程全局）。
+/// 在调用线程显式初始化引擎。
 ///
-/// 设为 `1`（默认）时：本库不会调用 `glfwMakeContextCurrent` 以获得最高性能；宿主必须保证
-/// 调用 ABI 之前上下文已 current。
-///
-/// 必须在 Servo 初始化之前调用。
-///
-/// #### 参数
-/// - `assume_context_current`：`0` 或非零。
+/// 该函数会初始化 Servo 并加载 OpenGL 入口；调用前宿主必须确保目标 OpenGL 上下文已 current。
 ///
 /// #### 返回
-/// - 值被接受则返回 `true`。
-/// - Servo 已初始化则返回 `false`。
-pub extern "C" fn xian_web_engine_set_assume_context_current(assume_context_current: u32) -> bool {
-    crate::engine::set_assume_context_current(assume_context_current != 0)
+/// - 成功（或该线程已初始化）返回 `true`。
+/// - 失败返回 `false`。
+///
+/// #### 线程
+/// - 所有 ABI 调用必须发生在 OpenGL 上下文为 current 的同一线程。
+pub extern "C" fn xian_web_engine_init() -> bool {
+    crate::engine::init().is_ok()
 }
 
 #[unsafe(no_mangle)]
 /// ### English
-/// Sets whether to auto-paint dirty views inside `xian_web_engine_tick` (`0`/`1`, process-global).
+/// Drives Servo once.
 ///
-/// When set to `1` (default), `xian_web_engine_tick` will paint all dirty views after driving the
-/// Servo event loop.
-///
-/// This must be called before Servo is initialized.
-///
-/// #### Parameters
-/// - `auto_paint`: `0` or non-zero.
+/// This function never paints. The embedder controls painting explicitly via
+/// `xian_web_engine_view_paint`.
 ///
 /// #### Returns
-/// - `true` if the value was accepted.
-/// - `false` if Servo is already initialized.
-///
-/// ### 中文
-/// 设置是否在 `xian_web_engine_tick` 内自动绘制 dirty view（`0`/`1`，进程全局）。
-///
-/// 设为 `1`（默认）时：`xian_web_engine_tick` 在驱动 Servo 事件循环后，会绘制所有 dirty view。
-///
-/// 必须在 Servo 初始化之前调用。
-///
-/// #### 参数
-/// - `auto_paint`：`0` 或非零。
-///
-/// #### 返回
-/// - 值被接受则返回 `true`。
-/// - Servo 已初始化则返回 `false`。
-pub extern "C" fn xian_web_engine_set_auto_paint(auto_paint: u32) -> bool {
-    crate::engine::set_auto_paint(auto_paint != 0)
-}
-
-#[unsafe(no_mangle)]
-/// ### English
-/// Returns whether `xian_web_engine_tick` is likely useful (best-effort hint).
-///
-/// #### Returns
-/// - `true` when the engine likely has pending work.
-/// - `false` when the engine appears idle or has not been created yet.
-///
-/// ### 中文
-/// 返回 `xian_web_engine_tick` 是否可能有意义（best-effort 提示）。
-///
-/// #### 返回
-/// - 引擎可能存在待处理工作时返回 `true`。
-/// - 引擎看起来空闲或尚未创建时返回 `false`。
-pub extern "C" fn xian_web_engine_needs_tick() -> bool {
-    crate::engine::needs_tick()
-}
-
-#[unsafe(no_mangle)]
-/// ### English
-/// Drives Servo once. When `AUTO_PAINT` is enabled, this also paints all dirty views.
-///
-/// #### Returns
-/// - Number of views painted in this tick.
+/// - Always returns `0`.
 ///
 /// #### Threading
 /// - Must follow this module's single-thread + current-context contract.
 ///
 /// ### 中文
-/// 驱动 Servo 一次；当启用 `AUTO_PAINT` 时，会在本次 tick 内绘制所有 dirty view。
+/// 驱动 Servo 一次。
+///
+/// 该函数不会执行绘制；绘制由宿主通过 `xian_web_engine_view_paint` 显式控制。
 ///
 /// #### 返回
-/// - 本次 tick 绘制的 view 数量。
+/// - 始终返回 `0`。
 ///
 /// #### 线程
 /// - 必须遵守本模块的单线程 + 上下文 current 约定。
@@ -399,6 +336,8 @@ pub unsafe extern "C" fn xian_web_engine_view_config_init(config: *mut XianWebEn
 /// ### English
 /// Creates a new view.
 ///
+/// The engine must be initialized explicitly by calling `xian_web_engine_init` first.
+///
 /// #### Parameters
 /// - `config`: View creation config.
 ///
@@ -415,6 +354,8 @@ pub unsafe extern "C" fn xian_web_engine_view_config_init(config: *mut XianWebEn
 /// ### 中文
 /// 创建一个新 view。
 ///
+/// 必须先显式调用 `xian_web_engine_init` 完成引擎初始化。
+///
 /// #### 参数
 /// - `config`：view 创建配置。
 ///
@@ -429,7 +370,7 @@ pub unsafe extern "C" fn xian_web_engine_view_config_init(config: *mut XianWebEn
 /// - `config` 必须非空、对齐且可读（大小至少为 `XianWebEngineViewConfig`）。
 pub unsafe extern "C" fn xian_web_engine_view_create(
     config: *const XianWebEngineViewConfig,
-) -> *mut XianWebEngineView {
+) -> *mut View {
     let Some(config) = (unsafe { ref_from_ptr(config) }) else {
         return ptr::null_mut();
     };
@@ -437,14 +378,14 @@ pub unsafe extern "C" fn xian_web_engine_view_create(
     let initial_url =
         unsafe { utf8_cstr(config.initial_url) }.and_then(|url| url::Url::parse(url).ok());
 
-    let params = ViewParams {
+    let config = ViewConfig {
         width: config.width,
         height: config.height,
         initial_url,
         hidpi_scale_factor: config.hidpi_scale_factor,
     };
 
-    match crate::engine::create_view(params) {
+    match crate::engine::create_view(config) {
         Ok(view) => view.as_ptr(),
         Err(_) => ptr::null_mut(),
     }
@@ -468,12 +409,11 @@ pub unsafe extern "C" fn xian_web_engine_view_create(
 ///
 /// #### 安全性
 /// - `view` 必须为 NULL，或由 `xian_web_engine_view_create` 返回的有效指针。
-pub unsafe extern "C" fn xian_web_engine_view_destroy(view: *mut XianWebEngineView) {
+pub unsafe extern "C" fn xian_web_engine_view_destroy(view: *mut View) {
     if view.is_null() || !is_aligned(view) {
         return;
     }
-    let view = unsafe { Box::from_raw(view) };
-    XianWebEngineView::destroy_boxed(view);
+    drop(unsafe { Box::from_raw(view) });
 }
 
 #[unsafe(no_mangle)]
@@ -507,7 +447,7 @@ pub unsafe extern "C" fn xian_web_engine_view_destroy(view: *mut XianWebEngineVi
 /// - `view` 必须为 NULL，或由 `xian_web_engine_view_create` 返回的有效指针。
 /// - 若非 NULL，`url` 必须指向有效的 NUL 结尾字符串。
 pub unsafe extern "C" fn xian_web_engine_view_load_url(
-    view: *mut XianWebEngineView,
+    view: *mut View,
     url: *const c_char,
 ) -> bool {
     let Some(view) = (unsafe { ref_from_ptr(view) }) else {
@@ -541,11 +481,7 @@ pub unsafe extern "C" fn xian_web_engine_view_load_url(
 ///
 /// #### 安全性
 /// - `view` 必须为 NULL，或由 `xian_web_engine_view_create` 返回的有效指针。
-pub unsafe extern "C" fn xian_web_engine_view_resize(
-    view: *mut XianWebEngineView,
-    width: u32,
-    height: u32,
-) {
+pub unsafe extern "C" fn xian_web_engine_view_resize(view: *mut View, width: u32, height: u32) {
     let Some(view) = (unsafe { ref_from_ptr(view) }) else {
         return;
     };
@@ -581,7 +517,7 @@ pub unsafe extern "C" fn xian_web_engine_view_resize(
 /// #### 安全性
 /// - `view` 必须为 NULL，或由 `xian_web_engine_view_create` 返回的有效指针。
 pub unsafe extern "C" fn xian_web_engine_view_set_hidpi_scale_factor(
-    view: *mut XianWebEngineView,
+    view: *mut View,
     hidpi_scale_factor: f32,
 ) -> bool {
     let Some(view) = (unsafe { ref_from_ptr(view) }) else {
@@ -595,7 +531,7 @@ pub unsafe extern "C" fn xian_web_engine_view_set_hidpi_scale_factor(
 /// Returns the OpenGL texture id of this view.
 ///
 /// #### Notes
-/// - The texture id may change after `xian_web_engine_view_resize`; query again after resizing.
+/// - The texture id is stable across `xian_web_engine_view_resize`.
 ///
 /// #### Parameters
 /// - `view`: View pointer.
@@ -610,7 +546,7 @@ pub unsafe extern "C" fn xian_web_engine_view_set_hidpi_scale_factor(
 /// 返回该 view 的 OpenGL 纹理 ID。
 ///
 /// #### 说明
-/// - 纹理 id 可能在 `xian_web_engine_view_resize` 后变化；resize 后请重新获取。
+/// - `xian_web_engine_view_resize` 过程中会原地调整纹理存储，因此纹理 id 保持不变。
 ///
 /// #### 参数
 /// - `view`：view 指针。
@@ -620,42 +556,11 @@ pub unsafe extern "C" fn xian_web_engine_view_set_hidpi_scale_factor(
 ///
 /// #### 安全性
 /// - `view` 必须为 NULL，或由 `xian_web_engine_view_create` 返回的有效指针。
-pub unsafe extern "C" fn xian_web_engine_view_texture_id(view: *const XianWebEngineView) -> u32 {
+pub unsafe extern "C" fn xian_web_engine_view_texture_id(view: *const View) -> u32 {
     let Some(view) = (unsafe { ref_from_ptr(view) }) else {
         return 0;
     };
     view.texture_id()
-}
-
-#[unsafe(no_mangle)]
-/// ### English
-/// Returns whether this view needs painting.
-///
-/// #### Parameters
-/// - `view`: View pointer.
-///
-/// #### Returns
-/// - `true` if the view is dirty and needs painting.
-///
-/// #### Safety
-/// - `view` must be either NULL, or a valid pointer returned by `xian_web_engine_view_create`.
-///
-/// ### 中文
-/// 返回该 view 是否需要绘制。
-///
-/// #### 参数
-/// - `view`：view 指针。
-///
-/// #### 返回
-/// - view 为 dirty 且需要绘制时返回 `true`。
-///
-/// #### 安全性
-/// - `view` 必须为 NULL，或由 `xian_web_engine_view_create` 返回的有效指针。
-pub unsafe extern "C" fn xian_web_engine_view_needs_paint(view: *const XianWebEngineView) -> bool {
-    let Some(view) = (unsafe { ref_from_ptr(view) }) else {
-        return false;
-    };
-    view.needs_paint()
 }
 
 #[unsafe(no_mangle)]
@@ -684,7 +589,7 @@ pub unsafe extern "C" fn xian_web_engine_view_needs_paint(view: *const XianWebEn
 ///
 /// #### 安全性
 /// - `view` 必须为 NULL，或由 `xian_web_engine_view_create` 返回的有效指针。
-pub unsafe extern "C" fn xian_web_engine_view_paint(view: *mut XianWebEngineView) -> bool {
+pub unsafe extern "C" fn xian_web_engine_view_paint(view: *mut View) -> bool {
     let Some(view) = (unsafe { ref_from_ptr(view) }) else {
         return false;
     };
@@ -722,7 +627,7 @@ pub unsafe extern "C" fn xian_web_engine_view_paint(view: *mut XianWebEngineView
 /// - `view` 必须为 NULL，或由 `xian_web_engine_view_create` 返回的有效指针。
 /// - 若非 NULL，`events` 必须对齐且在读取 `count` 个元素时保持有效。
 pub unsafe extern "C" fn xian_web_engine_view_send_input_events(
-    view: *mut XianWebEngineView,
+    view: *mut View,
     events: *const XianWebEngineInputEvent,
     count: u32,
 ) -> u32 {
