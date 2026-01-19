@@ -682,15 +682,6 @@ impl FrameDriver {
             return;
         }
 
-        /*
-        ### English
-        Move callbacks into a reusable scratch buffer, keeping the `callbacks` Vec capacity so new
-        callbacks scheduled during execution do not reallocate on the hot path.
-
-        ### 中文
-        将回调移动到可复用的临时缓冲中，同时保留 `callbacks` Vec 的 capacity，使回调执行期间新增的回调
-        在热路径上尽量避免重新分配。
-        */
         let mut scratch = self.scratch.borrow_mut();
         scratch.clear();
         scratch.append(&mut *callbacks);
@@ -957,17 +948,6 @@ impl Engine {
     /// - 初始化失败返回 `Err(InitError)`。
     pub(crate) fn new(params: EngineParams) -> Result<Self, InitError> {
         RUSTLS_PROVIDER_INIT.call_once(|| {
-            /*
-            ### English
-            Best-effort: install rustls crypto provider (Servo uses rustls internally).
-
-            This is process-global and must be installed at most once.
-
-            ### 中文
-            尽力而为：安装 rustls 密码提供者（Servo 内部使用 rustls）。
-
-            该设置为进程全局，且最多只能安装一次。
-            */
             let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         });
 

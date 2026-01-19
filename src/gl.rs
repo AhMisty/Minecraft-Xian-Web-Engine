@@ -460,13 +460,6 @@ impl Framebuffer {
         gl.tex_image_2d(
             gl::TEXTURE_2D,
             0,
-            /*
-            ### English
-            Use the base `RGBA` internal format (matches Servo offscreen context).
-
-            ### 中文
-            使用基础 `RGBA` 内部格式（与 Servo 离屏上下文一致）。
-            */
             gl::RGBA as gl::GLint,
             size.width as gl::GLsizei,
             size.height as gl::GLsizei,
@@ -499,13 +492,6 @@ impl Framebuffer {
         gl.bind_renderbuffer(gl::RENDERBUFFER, renderbuffer_id);
         gl.renderbuffer_storage(
             gl::RENDERBUFFER,
-            /*
-            ### English
-            Use a 24-bit depth renderbuffer (matches Servo offscreen context).
-
-            ### 中文
-            使用 24-bit 深度 Renderbuffer（与 Servo 离屏上下文一致）。
-            */
             gl::DEPTH_COMPONENT24,
             size.width as gl::GLsizei,
             size.height as gl::GLsizei,
@@ -604,13 +590,6 @@ impl Drop for Framebuffer {
     /// ### 中文
     /// 删除该帧缓冲持有的 GL 对象。
     fn drop(&mut self) {
-        /*
-        ### English
-        Unbind before deletion to avoid keeping deleted ids bound (matches Servo behavior).
-
-        ### 中文
-        删除前先解绑，避免已删除的 id 仍处于绑定状态（与 Servo 行为一致）。
-        */
         self.gl.bind_framebuffer(gl::FRAMEBUFFER, 0);
         self.gl.delete_textures(&[self.texture_id]);
         self.gl.delete_renderbuffers(&[self.renderbuffer_id]);
