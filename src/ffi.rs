@@ -15,7 +15,8 @@
 //!
 //! OpenGL state contract (for performance):
 //! - This crate does not save/restore any OpenGL state.
-//! - The embedder must restore its own GL state after calling into the ABI (e.g. after `tick`/`paint`).
+//! - The embedder must restore its own GL state after calling any ABI that may touch GL
+//!   (e.g. `init`/`view_create`/`tick`/`paint`/`resize`).
 //!
 //! ### 中文
 //! `xian_web_engine` 的 C ABI 接口层。
@@ -34,7 +35,8 @@
 //!
 //! OpenGL 状态约定（为性能而设计）：
 //! - 本库不会保存/恢复任何 OpenGL 状态。
-//! - 调用 ABI（例如 `tick`/`paint`）后，宿主必须自行恢复自身渲染所需的 GL 状态。
+//! - 调用任何可能触发 GL 的 ABI（例如 `init`/`view_create`/`tick`/`paint`/`resize`）后，
+//!   宿主必须自行恢复自身渲染所需的 GL 状态。
 
 use std::ffi::{CStr, c_char};
 use std::path::PathBuf;

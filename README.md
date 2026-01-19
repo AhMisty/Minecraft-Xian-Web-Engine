@@ -58,7 +58,7 @@ C ABI 版本：`2`（`xian_web_engine_abi_version()`）。
 ### 5) OpenGL 状态约定（重要）
 
 - 为获得最高性能，本库**不会**保存/恢复任何 OpenGL 状态
-- 调用 `xian_web_engine_tick()` / `xian_web_engine_view_paint()` / `xian_web_engine_view_resize()` 期间，Servo/WebRender 可能会改动大量 GL 状态；至少包含：FBO 绑定、viewport、VAO 绑定等（且不保证仅限于这些）
+- 调用任何可能触发 GL 的函数（例如 `xian_web_engine_init()` / `xian_web_engine_view_create()` / `xian_web_engine_tick()` / `xian_web_engine_view_paint()` / `xian_web_engine_view_resize()`）期间，Servo/WebRender 可能会改动大量 GL 状态；至少包含：FBO 绑定、viewport、VAO 绑定等（且不保证仅限于这些）
 - 宿主必须自行保证：调用后重新设置自己渲染所需的 GL 状态；推荐将这些调用放在每帧你设置/绑定自身渲染状态之前（例如帧开始）
 
 ---

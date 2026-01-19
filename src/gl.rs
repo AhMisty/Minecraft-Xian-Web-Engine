@@ -431,7 +431,6 @@ impl Framebuffer {
             texture_id,
             0,
         );
-        gl.bind_texture(gl::TEXTURE_2D, 0);
 
         let renderbuffer_ids = gl.gen_renderbuffers(1);
         let renderbuffer_id = renderbuffer_ids[0];
@@ -448,7 +447,6 @@ impl Framebuffer {
             gl::RENDERBUFFER,
             renderbuffer_id,
         );
-        gl.bind_renderbuffer(gl::RENDERBUFFER, 0);
 
         Self {
             gl,
@@ -486,7 +484,6 @@ impl Framebuffer {
             gl::UNSIGNED_BYTE,
             None,
         );
-        self.gl.bind_texture(gl::TEXTURE_2D, 0);
 
         self.gl
             .bind_renderbuffer(gl::RENDERBUFFER, self.renderbuffer_id);
@@ -496,7 +493,6 @@ impl Framebuffer {
             size.width as gl::GLsizei,
             size.height as gl::GLsizei,
         );
-        self.gl.bind_renderbuffer(gl::RENDERBUFFER, 0);
     }
 
     /// ### English
