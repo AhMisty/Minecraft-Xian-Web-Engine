@@ -594,6 +594,9 @@ pub unsafe extern "C" fn xian_web_engine_view_set_hidpi_scale_factor(
 /// ### English
 /// Returns the OpenGL texture id of this view.
 ///
+/// #### Notes
+/// - The texture id may change after `xian_web_engine_view_resize`; query again after resizing.
+///
 /// #### Parameters
 /// - `view`: View pointer.
 ///
@@ -605,6 +608,9 @@ pub unsafe extern "C" fn xian_web_engine_view_set_hidpi_scale_factor(
 ///
 /// ### 中文
 /// 返回该 view 的 OpenGL 纹理 ID。
+///
+/// #### 说明
+/// - 纹理 id 可能在 `xian_web_engine_view_resize` 后变化；resize 后请重新获取。
 ///
 /// #### 参数
 /// - `view`：view 指针。

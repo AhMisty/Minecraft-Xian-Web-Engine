@@ -71,4 +71,17 @@ pub(crate) enum InitError {
     /// #### 字段
     /// - `name`：入口函数名。
     MissingOpenGlEntryPoint { name: &'static str },
+
+    /// ### English
+    /// Internal invariant violated (this indicates a bug).
+    ///
+    /// #### Fields
+    /// - `name`: Invariant name for diagnostics.
+    ///
+    /// ### 中文
+    /// 内部不变量被破坏（这通常意味着 bug）。
+    ///
+    /// #### 字段
+    /// - `name`：不变量名称（用于诊断定位）。
+    InternalInvariant { name: &'static str },
 }

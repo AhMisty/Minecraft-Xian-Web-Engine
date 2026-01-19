@@ -93,7 +93,7 @@ thread_local! {
     /// 线程本地的 Surfman `Connection` 缓存（惰性创建）。
     ///
     /// `surfman::Connection` 在所有平台上都不保证实现 `Sync`，因此该缓存刻意设计为 thread-local。
-    static SURFMAN_CONNECTION: OnceCell<Connection> = const { OnceCell::new() };
+    static SURFMAN_CONNECTION: OnceCell<Option<Connection>> = const { OnceCell::new() };
 }
 
 #[inline]
@@ -393,8 +393,12 @@ fn validate_gl_entry_points(glfw: &GlfwContext) -> Result<(), InitError> {
 /// ### English
 /// Offscreen framebuffer (FBO + RGBA texture + depth renderbuffer) used as Servo render target.
 ///
+/// The size is tracked by the parent `TextureContext`.
+///
 /// ### 中文
 /// 作为 Servo 渲染目标的离屏帧缓冲（FBO + RGBA 纹理 + 深度 Renderbuffer）。
+///
+/// 尺寸由上层 `TextureContext` 追踪。
 struct Framebuffer {
     /// ### English
     /// Gleam GL entry used to create and operate GL objects.
@@ -411,25 +415,18 @@ struct Framebuffer {
     framebuffer_id: gl::GLuint,
 
     /// ### English
-    /// GL renderbuffer id (depth-stencil attachment).
+    /// GL renderbuffer id (depth attachment).
     ///
     /// ### 中文
-    /// GL renderbuffer id（深度+模板附件）。
+    /// GL renderbuffer id（深度附件）。
     renderbuffer_id: gl::GLuint,
 
     /// ### English
-    /// GL texture id (RGBA8 color attachment).
+    /// GL texture id (RGBA color attachment, 8-bit per channel).
     ///
     /// ### 中文
-    /// GL texture id（RGBA8 颜色附件）。
+    /// GL texture id（RGBA 颜色附件，每通道 8-bit）。
     texture_id: gl::GLuint,
-
-    /// ### English
-    /// Framebuffer size in physical pixels.
-    ///
-    /// ### 中文
-    /// 帧缓冲尺寸（物理像素）。
-    size: PhysicalSize<u32>,
 }
 
 impl Framebuffer {
@@ -463,7 +460,14 @@ impl Framebuffer {
         gl.tex_image_2d(
             gl::TEXTURE_2D,
             0,
-            gl::RGBA8 as gl::GLint,
+            /*
+            ### English
+            Use the base `RGBA` internal format (matches Servo offscreen context).
+
+            ### 中文
+            使用基础 `RGBA` 内部格式（与 Servo 离屏上下文一致）。
+            */
+            gl::RGBA as gl::GLint,
             size.width as gl::GLsizei,
             size.height as gl::GLsizei,
             0,
@@ -471,10 +475,16 @@ impl Framebuffer {
             gl::UNSIGNED_BYTE,
             None,
         );
-        gl.tex_parameter_i(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
-        gl.tex_parameter_i(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
-        gl.tex_parameter_i(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
-        gl.tex_parameter_i(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
+        gl.tex_parameter_i(
+            gl::TEXTURE_2D,
+            gl::TEXTURE_MAG_FILTER,
+            gl::NEAREST as gl::GLint,
+        );
+        gl.tex_parameter_i(
+            gl::TEXTURE_2D,
+            gl::TEXTURE_MIN_FILTER,
+            gl::NEAREST as gl::GLint,
+        );
         gl.framebuffer_texture_2d(
             gl::FRAMEBUFFER,
             gl::COLOR_ATTACHMENT0,
@@ -487,23 +497,22 @@ impl Framebuffer {
         let renderbuffer_ids = gl.gen_renderbuffers(1);
         let renderbuffer_id = renderbuffer_ids[0];
         gl.bind_renderbuffer(gl::RENDERBUFFER, renderbuffer_id);
-        /*
-        ### English
-        WebRender relies on stencil for clipping/masking. Use a depth-stencil attachment to keep
-        the FBO compatible with WebRender's expectations.
-
-        ### 中文
-        WebRender 依赖模板缓冲用于裁剪/遮罩；这里使用“深度+模板”附件，确保该 FBO 与 WebRender 的预期兼容。
-        */
         gl.renderbuffer_storage(
             gl::RENDERBUFFER,
-            gl::DEPTH24_STENCIL8,
+            /*
+            ### English
+            Use a 24-bit depth renderbuffer (matches Servo offscreen context).
+
+            ### 中文
+            使用 24-bit 深度 Renderbuffer（与 Servo 离屏上下文一致）。
+            */
+            gl::DEPTH_COMPONENT24,
             size.width as gl::GLsizei,
             size.height as gl::GLsizei,
         );
         gl.framebuffer_renderbuffer(
             gl::FRAMEBUFFER,
-            gl::DEPTH_STENCIL_ATTACHMENT,
+            gl::DEPTH_ATTACHMENT,
             gl::RENDERBUFFER,
             renderbuffer_id,
         );
@@ -513,71 +522,17 @@ impl Framebuffer {
             framebuffer_id,
             renderbuffer_id,
             texture_id,
-            size,
         }
     }
 
     /// ### English
-    /// Resizes the existing framebuffer attachments in-place.
-    ///
-    /// This keeps object ids stable and only reallocates storage for the color texture and depth
-    /// renderbuffer.
-    ///
-    /// #### Parameters
-    /// - `size`: New size in physical pixels (must be >= 1 in both dimensions).
+    /// Binds this framebuffer.
     ///
     /// ### 中文
-    /// 原地调整帧缓冲附件尺寸。
-    ///
-    /// 该操作会保持对象 id 不变，仅重新分配颜色纹理与深度 Renderbuffer 的存储。
-    ///
-    /// #### 参数
-    /// - `size`：新尺寸（物理像素；两个维度都必须 >= 1）。
-    fn resize(&mut self, size: PhysicalSize<u32>) {
-        if self.size == size {
-            return;
-        }
-
-        self.gl.bind_texture(gl::TEXTURE_2D, self.texture_id);
-        self.gl.tex_image_2d(
-            gl::TEXTURE_2D,
-            0,
-            gl::RGBA8 as gl::GLint,
-            size.width as gl::GLsizei,
-            size.height as gl::GLsizei,
-            0,
-            gl::RGBA,
-            gl::UNSIGNED_BYTE,
-            None,
-        );
-        self.gl.bind_texture(gl::TEXTURE_2D, 0);
-
-        self.gl
-            .bind_renderbuffer(gl::RENDERBUFFER, self.renderbuffer_id);
-        self.gl.renderbuffer_storage(
-            gl::RENDERBUFFER,
-            gl::DEPTH24_STENCIL8,
-            size.width as gl::GLsizei,
-            size.height as gl::GLsizei,
-        );
-
-        self.size = size;
-    }
-
-    /// ### English
-    /// Binds this framebuffer and sets the viewport to its size.
-    ///
-    /// ### 中文
-    /// 绑定该帧缓冲，并将 viewport 设为其尺寸。
+    /// 绑定该帧缓冲。
     fn bind(&self) {
         self.gl
             .bind_framebuffer(gl::FRAMEBUFFER, self.framebuffer_id);
-        self.gl.viewport(
-            0,
-            0,
-            self.size.width as gl::GLint,
-            self.size.height as gl::GLint,
-        );
     }
 
     /// ### English
@@ -649,6 +604,14 @@ impl Drop for Framebuffer {
     /// ### 中文
     /// 删除该帧缓冲持有的 GL 对象。
     fn drop(&mut self) {
+        /*
+        ### English
+        Unbind before deletion to avoid keeping deleted ids bound (matches Servo behavior).
+
+        ### 中文
+        删除前先解绑，避免已删除的 id 仍处于绑定状态（与 Servo 行为一致）。
+        */
+        self.gl.bind_framebuffer(gl::FRAMEBUFFER, 0);
         self.gl.delete_textures(&[self.texture_id]);
         self.gl.delete_renderbuffers(&[self.renderbuffer_id]);
         self.gl.delete_framebuffers(&[self.framebuffer_id]);
@@ -753,11 +716,17 @@ impl TextureContext {
     /// ### English
     /// Returns the OpenGL texture id of the color attachment.
     ///
+    /// #### Notes
+    /// - The texture id may change after `resize` (framebuffer is recreated to match Servo behavior).
+    ///
     /// #### Returns
     /// - OpenGL texture id.
     ///
     /// ### 中文
     /// 返回颜色附件的 OpenGL 纹理 id。
+    ///
+    /// #### 说明
+    /// - 纹理 id 可能在 `resize` 后变化（为对齐 Servo 行为会重建帧缓冲）。
     ///
     /// #### 返回
     /// - OpenGL 纹理 id。
@@ -831,7 +800,7 @@ impl servo::RenderingContext for TextureContext {
             return;
         }
 
-        self.framebuffer.borrow_mut().resize(size);
+        *self.framebuffer.borrow_mut() = Framebuffer::new(self.gleam_gl.clone(), size);
         self.size.set(size);
     }
 
@@ -850,24 +819,22 @@ impl servo::RenderingContext for TextureContext {
     /// Returns a Surfman `Connection` required by Servo's paint subsystem.
     ///
     /// On Windows this is effectively a no-op; on Unix/macOS this may connect to the display
-    /// server. This implementation fails fast on error to avoid later panics inside Servo.
+    /// server.
     ///
     /// #### Returns
     /// - `Some(Connection)` when created successfully.
+    /// - `None` when the connection cannot be created.
     ///
     /// ### 中文
     /// 返回 Servo 绘制子系统所需的 Surfman `Connection`。
     ///
     /// 在 Windows 上该对象基本是 no-op；在 Unix/macOS 上可能会连接到显示服务器。
-    /// 本实现选择在创建失败时立刻失败，以避免后续在 Servo 内部以 `expect` 形式崩溃。
     ///
     /// #### 返回
     /// - 创建成功时返回 `Some(Connection)`。
+    /// - 创建失败时返回 `None`。
     fn connection(&self) -> Option<Connection> {
-        Some(SURFMAN_CONNECTION.with(|cell| {
-            cell.get_or_init(|| Connection::new().expect("surfman::Connection::new failed"))
-                .clone()
-        }))
+        SURFMAN_CONNECTION.with(|cell| cell.get_or_init(|| Connection::new().ok()).clone())
     }
 
     /// ### English

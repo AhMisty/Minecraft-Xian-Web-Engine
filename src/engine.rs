@@ -470,10 +470,10 @@ pub(crate) fn create_view(params: ViewParams) -> Result<NonNull<XianWebEngineVie
         if engine_slot.is_none() {
             *engine_slot = Some(Engine::new(engine_params_from_globals()?)?);
         }
-        Ok(engine_slot
+        let engine = engine_slot
             .as_mut()
-            .expect("engine must be initialized above")
-            .create_view(params))
+            .ok_or(InitError::InternalInvariant { name: "ENGINE" })?;
+        Ok(engine.create_view(params))
     })
 }
 
@@ -1263,12 +1263,10 @@ impl XianWebEngineView {
     ///
     /// #### 参数
     /// - `view`：要销毁的装箱 view。
-    pub(crate) fn destroy_boxed(mut view: Box<Self>) {
+    pub(crate) fn destroy_boxed(view: Box<Self>) {
         view.dirty_tracker.clear();
 
-        let view_ptr = NonNull::new(view.as_mut() as *mut XianWebEngineView)
-            .expect("NonNull from Box is guaranteed");
-        unregister_view(view_ptr);
+        unregister_view(NonNull::from(view.as_ref()));
     }
 
     /// ### English
@@ -1351,11 +1349,17 @@ impl XianWebEngineView {
     /// ### English
     /// Returns the OpenGL texture id of this view.
     ///
+    /// #### Notes
+    /// - The texture id may change after `resize`; query again after resizing.
+    ///
     /// #### Returns
     /// - OpenGL texture id.
     ///
     /// ### 中文
     /// 返回该 view 的 OpenGL 纹理 id。
+    ///
+    /// #### 说明
+    /// - 纹理 id 可能在 `resize` 后发生变化；resize 后请重新获取。
     ///
     /// #### 返回
     /// - OpenGL 纹理 id。
