@@ -27,6 +27,24 @@ use crate::input::map_input_event;
 static RUSTLS_PROVIDER_INIT: Once = Once::new();
 
 /// ### English
+/// One-time initialization for Rust-side logging.
+///
+/// ### 中文
+/// Rust 侧日志的一次性初始化。
+static LOG_INIT: Once = Once::new();
+
+fn try_init_logging() {
+    LOG_INIT.call_once(|| {
+        let env = env_logger::Env::default().default_filter_or("warn");
+        let logger = env_logger::Builder::from_env(env).build();
+        let max_level = logger.filter();
+        if log::set_boxed_logger(Box::new(logger)).is_ok() {
+            log::set_max_level(max_level);
+        }
+    });
+}
+
+/// ### English
 /// Whether Servo has been initialized in this process.
 ///
 /// ### 中文
@@ -628,6 +646,8 @@ impl Engine {
     /// - 成功返回 `Ok(Engine)`。
     /// - 初始化失败返回 `Err(InitError)`。
     pub(crate) fn new(glfw_get_proc_address: usize, gl_api: u32) -> Result<Self, InitError> {
+        try_init_logging();
+
         RUSTLS_PROVIDER_INIT.call_once(|| {
             let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         });
@@ -757,21 +777,29 @@ impl Engine {
 
         let dirty_tracker = Rc::new(DirtyTracker::new());
 
-        let webview = WebViewBuilder::new(&self.servo, rendering_context.clone())
+        // Important: If we call `webview.load(...)` immediately after creating a WebView, the
+        // navigation can be ignored because Constellation may already have a pending initial load
+        // for the browsing context (see the `pending_changes` guard in Constellation::load_url).
+        //
+        // To avoid the "LoadUrl gets dropped and we stay on about:blank" race, pass the initial URL
+        // to `WebViewBuilder` so it becomes the WebView's *initial* navigation via `NewWebView`.
+        let mut builder = WebViewBuilder::new(&self.servo, rendering_context.clone())
             .hidpi_scale_factor(euclid::Scale::new(hidpi_scale_factor))
-            .delegate(dirty_tracker.clone())
-            .build();
-
-        webview.show();
+            .delegate(dirty_tracker.clone());
 
         if let Some(url) = config.initial_url {
-            webview.load(url);
+            builder = builder.url(url);
         }
+
+        let webview = builder.build();
+
+        webview.show();
 
         let view = Box::new(View {
             webview,
             rendering_context,
             dirty_tracker,
+            last_logged_device_size: Cell::new((0, 0)),
         });
 
         NonNull::from(Box::leak(view))
@@ -819,9 +847,48 @@ pub struct View {
     /// ### 中文
     /// 用于 dirty 跟踪的 delegate。
     dirty_tracker: Rc<DirtyTracker>,
+
+    /// Last size we logged for this view (in device pixels), used to avoid spamming logs.
+    last_logged_device_size: Cell<(u32, u32)>,
 }
 
 impl View {
+    fn log_device_size_if_changed(&self, reason: &'static str) {
+        let size = self.webview.size();
+        let w = size.width.round().max(0.0) as u32;
+        let h = size.height.round().max(0.0) as u32;
+
+        let prev = self.last_logged_device_size.get();
+        if prev == (w, h) {
+            return;
+        }
+        self.last_logged_device_size.set((w, h));
+
+        let hidpi = self.webview.hidpi_scale_factor().0;
+        let css_w = if hidpi.is_finite() && hidpi > 0.0 {
+            size.width / hidpi
+        } else {
+            size.width
+        };
+        let css_h = if hidpi.is_finite() && hidpi > 0.0 {
+            size.height / hidpi
+        } else {
+            size.height
+        };
+
+        log::warn!(
+            target: "xian::webview",
+            "Servo WebView size={}x{} device_px, hidpi_scale_factor={}, css_px={:.1}x{:.1} (reason={}, texture_id={})",
+            w,
+            h,
+            hidpi,
+            css_w,
+            css_h,
+            reason,
+            self.rendering_context.texture_id()
+        );
+    }
+
     /// ### English
     /// Loads a URL into this view.
     ///
@@ -863,6 +930,7 @@ impl View {
     pub(crate) fn resize(&self, width: u32, height: u32) {
         let size = PhysicalSize::new(width.max(1), height.max(1));
         self.webview.resize(size);
+        self.log_device_size_if_changed("resize");
     }
 
     /// ### English
@@ -921,6 +989,24 @@ impl View {
     }
 
     /// ### English
+    /// Returns the current `LoadStatus` of this view.
+    ///
+    /// ### 中文
+    /// 返回该 view 当前的 `LoadStatus`。
+    pub(crate) fn load_status(&self) -> servo::LoadStatus {
+        self.webview.load_status()
+    }
+
+    /// ### English
+    /// Returns the current URL of this view (if any).
+    ///
+    /// ### 中文
+    /// 返回该 view 当前的 URL（若存在）。
+    pub(crate) fn current_url(&self) -> Option<url::Url> {
+        self.webview.url()
+    }
+
+    /// ### English
     /// Paints this view immediately if it is dirty.
     ///
     /// #### Returns
@@ -934,10 +1020,15 @@ impl View {
     /// - 确实执行了绘制则返回 `true`。
     /// - view 非 dirty 则返回 `false`。
     pub(crate) fn paint(&self) -> bool {
-        if !self.dirty_tracker.take_dirty() {
-            return false;
-        }
+        self.log_device_size_if_changed("paint");
 
+        // Servo's embedder API allows painting even without a preceding
+        // `notify_new_frame_ready` (e.g. window damage/repaint). In Minecraft we also want a
+        // robust "always repaint when asked" behavior to avoid getting stuck showing only the
+        // clear color during startup or when notifications are missed.
+        //
+        // We still clear the dirty flag so callers that use it for optimization don't get stuck.
+        let _ = self.dirty_tracker.take_dirty();
         self.webview.paint();
         true
     }

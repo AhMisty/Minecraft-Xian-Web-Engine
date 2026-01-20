@@ -4215,10 +4215,12 @@ name = "minecraft-xian-web-engine"
 version = "0.1.0"
 dependencies = [
  "dpi",
+ "env_logger",
  "euclid",
  "gleam",
  "glow",
  "libservo",
+ "log",
  "rustls",
  "surfman",
  "url",

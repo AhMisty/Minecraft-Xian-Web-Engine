@@ -379,6 +379,10 @@ impl Framebuffer {
     /// ### English
     /// Creates a new offscreen framebuffer of the given size.
     ///
+    /// #### Notes
+    /// - This function unbinds `GL_TEXTURE_2D` / `GL_RENDERBUFFER` (binds to `0`) before returning
+    ///   to reduce OpenGL state leakage into the embedder.
+    ///
     /// #### Parameters
     /// - `gl`: Gleam GL entry bound to the current context.
     /// - `size`: Physical size in pixels (must be >= 1 in both dimensions).
@@ -388,6 +392,10 @@ impl Framebuffer {
     ///
     /// ### 中文
     /// 创建指定尺寸的离屏帧缓冲。
+    ///
+    /// #### 说明
+    /// - 本函数在返回前会将 `GL_TEXTURE_2D` / `GL_RENDERBUFFER` 解绑（绑定到 `0`），
+    ///   以减少对宿主 OpenGL 状态的污染。
     ///
     /// #### 参数
     /// - `gl`：绑定到当前上下文的 Gleam GL 入口。
@@ -431,22 +439,26 @@ impl Framebuffer {
             texture_id,
             0,
         );
+        gl.bind_texture(gl::TEXTURE_2D, 0);
 
+        // WebRender uses the stencil buffer for clip masks. Without a stencil attachment the output
+        // can end up being "just the clear color" (everything clipped away).
         let renderbuffer_ids = gl.gen_renderbuffers(1);
         let renderbuffer_id = renderbuffer_ids[0];
         gl.bind_renderbuffer(gl::RENDERBUFFER, renderbuffer_id);
         gl.renderbuffer_storage(
             gl::RENDERBUFFER,
-            gl::DEPTH_COMPONENT24,
+            gl::DEPTH24_STENCIL8,
             size.width as gl::GLsizei,
             size.height as gl::GLsizei,
         );
         gl.framebuffer_renderbuffer(
             gl::FRAMEBUFFER,
-            gl::DEPTH_ATTACHMENT,
+            gl::DEPTH_STENCIL_ATTACHMENT,
             gl::RENDERBUFFER,
             renderbuffer_id,
         );
+        gl.bind_renderbuffer(gl::RENDERBUFFER, 0);
 
         Self {
             gl,
@@ -461,6 +473,10 @@ impl Framebuffer {
     ///
     /// This keeps the framebuffer/texture ids stable while reallocating storage.
     ///
+    /// #### Notes
+    /// - This function unbinds `GL_TEXTURE_2D` / `GL_RENDERBUFFER` (binds to `0`) before returning
+    ///   to reduce OpenGL state leakage into the embedder.
+    ///
     /// #### Parameters
     /// - `size`: New size in physical pixels (must be >= 1 in both dimensions).
     ///
@@ -468,6 +484,10 @@ impl Framebuffer {
     /// 原地调整该帧缓冲的附件尺寸。
     ///
     /// 该方式不会删除/重建 GL 对象，因此 framebuffer/texture id 保持不变；仅通过重新分配存储来改变尺寸。
+    ///
+    /// #### 说明
+    /// - 本函数在返回前会将 `GL_TEXTURE_2D` / `GL_RENDERBUFFER` 解绑（绑定到 `0`），
+    ///   以减少对宿主 OpenGL 状态的污染。
     ///
     /// #### 参数
     /// - `size`：新尺寸（物理像素；两个维度都必须 >= 1）。
@@ -484,15 +504,17 @@ impl Framebuffer {
             gl::UNSIGNED_BYTE,
             None,
         );
+        self.gl.bind_texture(gl::TEXTURE_2D, 0);
 
         self.gl
             .bind_renderbuffer(gl::RENDERBUFFER, self.renderbuffer_id);
         self.gl.renderbuffer_storage(
             gl::RENDERBUFFER,
-            gl::DEPTH_COMPONENT24,
+            gl::DEPTH24_STENCIL8,
             size.width as gl::GLsizei,
             size.height as gl::GLsizei,
         );
+        self.gl.bind_renderbuffer(gl::RENDERBUFFER, 0);
     }
 
     /// ### English
@@ -510,6 +532,10 @@ impl Framebuffer {
     ///
     /// The buffer is flipped vertically in-place to match the top-left origin expected by Servo.
     ///
+    /// #### Notes
+    /// - This function unbinds the framebuffer (binds to `0`) before returning to reduce OpenGL
+    ///   state leakage into the embedder.
+    ///
     /// #### Parameters
     /// - `source_rectangle`: Rectangle to read (in device pixels).
     ///
@@ -521,6 +547,9 @@ impl Framebuffer {
     /// 读取像素并返回 `RgbaImage`。
     ///
     /// 会原地做一次垂直翻转，以匹配 Servo 期望的左上角原点坐标系。
+    ///
+    /// #### 说明
+    /// - 本函数在返回前会将 framebuffer 解绑（绑定到 `0`），以减少对宿主 OpenGL 状态的污染。
     ///
     /// #### 参数
     /// - `source_rectangle`：读取区域（设备像素）。
@@ -541,6 +570,7 @@ impl Framebuffer {
             gl::RGBA,
             gl::UNSIGNED_BYTE,
         );
+        self.gl.bind_framebuffer(gl::FRAMEBUFFER, 0);
 
         let source_rectangle = source_rectangle.to_usize();
         let width = source_rectangle.width();
@@ -571,9 +601,17 @@ impl Drop for Framebuffer {
     /// ### English
     /// Deletes GL objects owned by this framebuffer.
     ///
+    /// #### Notes
+    /// - Unbinds the framebuffer before deletion to avoid leaving deleted ids bound
+    ///   (matches Servo behavior).
+    ///
     /// ### 中文
     /// 删除该帧缓冲持有的 GL 对象。
+    ///
+    /// #### 说明
+    /// - 删除前先解绑 framebuffer，避免已删除的 id 仍处于绑定状态（与 Servo 行为一致）。
     fn drop(&mut self) {
+        self.gl.bind_framebuffer(gl::FRAMEBUFFER, 0);
         self.gl.delete_textures(&[self.texture_id]);
         self.gl.delete_renderbuffers(&[self.renderbuffer_id]);
         self.gl.delete_framebuffers(&[self.framebuffer_id]);

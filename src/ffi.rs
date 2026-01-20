@@ -15,6 +15,8 @@
 //!
 //! OpenGL state contract (for performance):
 //! - This crate does not save/restore any OpenGL state.
+//! - It may perform minimal cleanup (e.g. unbinding some targets to `0`) after internal
+//!   setup/readback, but the embedder must still restore its own GL state.
 //! - The embedder must restore its own GL state after calling any ABI that may touch GL
 //!   (e.g. `init`/`view_create`/`tick`/`paint`/`resize`).
 //!
@@ -35,6 +37,8 @@
 //!
 //! OpenGL 状态约定（为性能而设计）：
 //! - 本库不会保存/恢复任何 OpenGL 状态。
+//! - 本库可能会在内部的部分步骤做少量清理（例如将部分 target 解绑到 `0`），
+//!   但这并不等价于状态恢复；宿主仍需自行恢复自身渲染所需的 GL 状态。
 //! - 调用任何可能触发 GL 的 ABI（例如 `init`/`view_create`/`tick`/`paint`/`resize`）后，
 //!   宿主必须自行恢复自身渲染所需的 GL 状态。
 
@@ -596,6 +600,114 @@ pub unsafe extern "C" fn xian_web_engine_view_paint(view: *mut View) -> bool {
         return false;
     };
     view.paint()
+}
+
+#[unsafe(no_mangle)]
+/// ### English
+/// Returns the current load status of the view.
+///
+/// #### Parameters
+/// - `view`: View pointer.
+///
+/// #### Returns
+/// - `0`: Started
+/// - `1`: HeadParsed
+/// - `2`: Complete
+/// - `0xFFFFFFFF`: NULL/invalid view
+///
+/// #### Safety
+/// - `view` must be either NULL, or a valid pointer returned by `xian_web_engine_view_create`.
+///
+/// ### 中文
+/// 返回该 view 当前的加载状态。
+///
+/// #### 参数
+/// - `view`：view 指针。
+///
+/// #### 返回
+/// - `0`：Started
+/// - `1`：HeadParsed
+/// - `2`：Complete
+/// - `0xFFFFFFFF`：NULL/无效 view
+///
+/// #### 安全性
+/// - `view` 必须为 NULL，或由 `xian_web_engine_view_create` 返回的有效指针。
+pub unsafe extern "C" fn xian_web_engine_view_load_status(view: *const View) -> u32 {
+    let Some(view) = (unsafe { ref_from_ptr(view) }) else {
+        return u32::MAX;
+    };
+    match view.load_status() {
+        servo::LoadStatus::Started => 0,
+        servo::LoadStatus::HeadParsed => 1,
+        servo::LoadStatus::Complete => 2,
+    }
+}
+
+#[unsafe(no_mangle)]
+/// ### English
+/// Copies the current URL of the view into a UTF-8 buffer.
+///
+/// The URL is returned as a NUL-terminated string when `out_len > 0`.
+///
+/// #### Parameters
+/// - `view`: View pointer.
+/// - `out`: Output buffer for UTF-8 bytes (may be NULL to query required length).
+/// - `out_len`: Capacity of `out` in bytes (including space for NUL terminator).
+///
+/// #### Returns
+/// - If `out` is NULL or `out_len == 0`: required byte length (excluding NUL) for the current URL.
+/// - Otherwise: number of bytes written (excluding NUL).
+/// - Returns `0` when there is no current URL or on NULL/invalid view.
+///
+/// #### Safety
+/// - `view` must be either NULL, or a valid pointer returned by `xian_web_engine_view_create`.
+/// - If `out` is non-NULL, it must be valid for writes of `out_len` bytes.
+///
+/// ### 中文
+/// 将该 view 当前 URL 拷贝到 UTF-8 缓冲区。
+///
+/// 当 `out_len > 0` 时，输出为 NUL 结尾字符串。
+///
+/// #### 参数
+/// - `view`：view 指针。
+/// - `out`：输出缓冲区（可为 NULL，用于查询长度）。
+/// - `out_len`：`out` 的容量（字节，包含 NUL 结尾的空间）。
+///
+/// #### 返回
+/// - `out` 为 NULL 或 `out_len == 0`：返回所需字节长度（不包含 NUL）。
+/// - 否则：返回实际写入字节数（不包含 NUL）。
+/// - 无当前 URL 或 NULL/无效 view 时返回 `0`。
+///
+/// #### 安全性
+/// - `view` 必须为 NULL，或由 `xian_web_engine_view_create` 返回的有效指针。
+/// - 若 `out` 非 NULL，则必须在写入 `out_len` 字节期间保持有效。
+pub unsafe extern "C" fn xian_web_engine_view_copy_url_utf8(
+    view: *const View,
+    out: *mut c_char,
+    out_len: u32,
+) -> u32 {
+    let Some(view) = (unsafe { ref_from_ptr(view) }) else {
+        return 0;
+    };
+
+    let Some(url) = view.current_url() else {
+        return 0;
+    };
+    let s = url.as_str();
+    let bytes = s.as_bytes();
+
+    if out.is_null() || out_len == 0 {
+        return bytes.len() as u32;
+    }
+
+    let cap = out_len as usize;
+    // Reserve 1 byte for the NUL terminator.
+    let n = bytes.len().min(cap.saturating_sub(1));
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out as *mut u8, n);
+        *out.add(n) = 0;
+    }
+    n as u32
 }
 
 #[unsafe(no_mangle)]
