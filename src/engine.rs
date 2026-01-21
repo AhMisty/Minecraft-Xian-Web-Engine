@@ -9,7 +9,8 @@ use std::path::PathBuf;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
-use std::sync::{Once, RwLock};
+use std::sync::{Arc, Once, RwLock};
+use std::time::{Duration, Instant};
 
 use dpi::PhysicalSize;
 use servo::{RefreshDriver, WebView, WebViewBuilder, WebViewDelegate};
@@ -71,6 +72,13 @@ static GL_API: AtomicU32 = AtomicU32::new(crate::abi::XIAN_WEB_ENGINE_GL_API_GL)
 /// ### 中文
 /// 进程全局的 Servo 配置目录覆盖值。
 static CONFIG_DIR: RwLock<Option<PathBuf>> = RwLock::new(None);
+
+/// ### English
+/// Process-global web root directory used by the `xian://` custom protocol.
+///
+/// ### 中文
+/// `xian://` 自定义协议使用的 Web 根目录（进程全局）。
+static WEB_ROOT_DIR: RwLock<Option<PathBuf>> = RwLock::new(None);
 
 /// ### English
 /// Process-global worker thread cap (`0` = no cap).
@@ -210,6 +218,46 @@ pub(crate) fn set_config_dir(path: Option<PathBuf>) -> bool {
 /// - 未设置覆盖时返回 `None`。
 pub(crate) fn config_dir() -> Option<PathBuf> {
     CONFIG_DIR.read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+#[inline]
+/// ### English
+/// Sets the process-global web root directory used by the `xian://` custom protocol.
+///
+/// This must be called before calling `init`.
+///
+/// #### Parameters
+/// - `path`: Root directory; `None` clears the override.
+///
+/// #### Returns
+/// - `true` if the value was accepted.
+/// - `false` if Servo is already initialized.
+///
+/// ### 中文
+/// 设置 `xian://` 自定义协议使用的 Web 根目录（进程全局）。
+///
+/// 必须在调用 `init` 之前调用。
+pub(crate) fn set_web_root_dir(path: Option<PathBuf>) -> bool {
+    if is_servo_initialized() {
+        return false;
+    }
+    let mut root = WEB_ROOT_DIR.write().unwrap_or_else(|e| e.into_inner());
+    *root = path;
+    true
+}
+
+#[inline]
+/// ### English
+/// Gets the process-global web root directory used by the `xian://` custom protocol.
+///
+/// #### Returns
+/// - `Some(PathBuf)` when configured.
+/// - `None` when not configured.
+///
+/// ### 中文
+/// 获取 `xian://` 自定义协议使用的 Web 根目录（进程全局）。
+pub(crate) fn web_root_dir() -> Option<PathBuf> {
+    WEB_ROOT_DIR.read().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 #[inline]
@@ -396,7 +444,7 @@ pub(crate) struct ViewConfig {
     pub(crate) hidpi_scale_factor: f32,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 /// ### English
 /// Servo event-loop waker used by this embedder.
 ///
@@ -407,9 +455,11 @@ pub(crate) struct ViewConfig {
 /// 本嵌入层使用的 Servo 事件循环唤醒器。
 ///
 /// 本嵌入层由宿主显式驱动（通常每帧一次），因此 `wake` 为 no-op。
-struct NoopWaker;
+struct FlagWaker {
+    pending: Arc<AtomicBool>,
+}
 
-impl servo::EventLoopWaker for NoopWaker {
+impl servo::EventLoopWaker for FlagWaker {
     /// ### English
     /// Clones this waker as a boxed trait object.
     ///
@@ -422,7 +472,9 @@ impl servo::EventLoopWaker for NoopWaker {
     /// #### 返回
     /// - 新的装箱唤醒器。
     fn clone_box(&self) -> Box<dyn servo::EventLoopWaker> {
-        Box::new(*self)
+        Box::new(Self {
+            pending: self.pending.clone(),
+        })
     }
 
     /// ### English
@@ -430,7 +482,10 @@ impl servo::EventLoopWaker for NoopWaker {
     ///
     /// ### 中文
     /// 唤醒事件循环。
-    fn wake(&self) {}
+    fn wake(&self) {
+        // Servo uses this to tell the embedder that there is new work to process.
+        self.pending.store(true, Ordering::Release);
+    }
 }
 
 /// ### English
@@ -621,6 +676,9 @@ struct Engine {
     /// ### 中文
     /// Servo 实例（由 `tick` 驱动）。
     servo: servo::Servo,
+
+    /// Set to `true` when Servo wakes the embedder (new work available).
+    wake_pending: Arc<AtomicBool>,
 }
 
 impl Engine {
@@ -691,7 +749,12 @@ impl Engine {
         };
 
         let preferences = servo::Preferences {
-            gfx_precache_shaders: true,
+            // Disable shader precache to avoid long stalls during startup/first page load.
+            // This may shift some compilation cost to the first time a specific render path is used.
+            gfx_precache_shaders: false,
+            // Make the compositor clear color fully transparent so pages with transparent
+            // canvas background render with alpha=0 instead of solid white.
+            shell_background_color_rgba: [0.0, 0.0, 0.0, 0.0],
             layout_threads: tuned_threads,
             threadpools_fallback_worker_num: tuned_threads,
             threadpools_async_runtime_workers_max: tuned_threads,
@@ -702,7 +765,10 @@ impl Engine {
             ..Default::default()
         };
 
-        let waker: Box<dyn servo::EventLoopWaker> = Box::new(NoopWaker);
+        let wake_pending = Arc::new(AtomicBool::new(false));
+        let waker: Box<dyn servo::EventLoopWaker> = Box::new(FlagWaker {
+            pending: wake_pending.clone(),
+        });
 
         let frame_driver = Rc::new(FrameDriver::new());
 
@@ -713,16 +779,24 @@ impl Engine {
             return Err(InitError::ServoAlreadyInitialized);
         }
 
+        let mut protocol_registry = servo::protocol_handler::ProtocolRegistry::default();
+        // Custom local protocol: `xian://` -> embedder-provided web root directory.
+        protocol_registry
+            .register("xian", crate::protocols::xian::XianProtocolHandler::default())
+            .expect("Failed to register xian:// protocol handler");
+
         let servo = servo::ServoBuilder::default()
             .opts(opts)
             .preferences(preferences)
             .event_loop_waker(waker)
+            .protocol_registry(protocol_registry)
             .build();
 
         Ok(Self {
             frame_driver,
             gl,
             servo,
+            wake_pending,
         })
     }
 
@@ -739,7 +813,29 @@ impl Engine {
     /// - 始终返回 `0`（绘制由宿主显式控制）。
     pub(crate) fn tick(&mut self) -> u32 {
         self.frame_driver.begin_frame();
+        // Our embedder is driven by Minecraft frames and does not have a real OS event loop.
+        // Servo expects the embedder to wake and spin again when new work arrives; without this,
+        // chained async tasks (timers/microtasks/network) can be artificially throttled to 1 tick/frame.
+        //
+        // We emulate a waker-driven loop by spinning a few extra times within a small time budget
+        // when Servo requested a wake during the previous spin.
+        const MAX_EXTRA_SPINS: usize = 16;
+        const EXTRA_SPIN_BUDGET: Duration = Duration::from_millis(8);
+
+        let start = Instant::now();
+
+        self.wake_pending.store(false, Ordering::Release);
         self.servo.spin_event_loop();
+
+        for _ in 0..MAX_EXTRA_SPINS {
+            if !self.wake_pending.swap(false, Ordering::AcqRel) {
+                break;
+            }
+            if start.elapsed() >= EXTRA_SPIN_BUDGET {
+                break;
+            }
+            self.servo.spin_event_loop();
+        }
         0
     }
 
@@ -911,6 +1007,8 @@ impl View {
             return false;
         };
         self.webview.load(url);
+        // Ensure we repaint at least once even if the embedder missed a frame-ready notification.
+        self.dirty_tracker.mark_dirty();
         true
     }
 
@@ -930,6 +1028,8 @@ impl View {
     pub(crate) fn resize(&self, width: u32, height: u32) {
         let size = PhysicalSize::new(width.max(1), height.max(1));
         self.webview.resize(size);
+        // Resizing changes the render target; force a repaint so the new texture isn't left blank.
+        self.dirty_tracker.mark_dirty();
         self.log_device_size_if_changed("resize");
     }
 
@@ -964,7 +1064,27 @@ impl View {
         }
         self.webview
             .set_hidpi_scale_factor(euclid::Scale::new(hidpi_scale_factor));
+        // HiDPI affects CSS<->device pixel conversion; ensure the next frame repaints.
+        self.dirty_tracker.mark_dirty();
         true
+    }
+
+    /// ### English
+    /// Marks the view as throttled/unthrottled.
+    ///
+    /// When throttled, Servo may reduce work for animations and timers.
+    ///
+    /// ### 中文
+    /// 设置该 view 是否节流（throttled）。
+    ///
+    /// 当节流时，Servo 可能会减少动画/计时器等工作量，从而降低 CPU 占用。
+    pub(crate) fn set_throttled(&self, throttled: bool) {
+        self.webview.set_throttled(throttled);
+        // When becoming active again, force at least one repaint so the embedder can refresh
+        // immediately even if a frame-ready notification is delayed.
+        if !throttled {
+            self.dirty_tracker.mark_dirty();
+        }
     }
 
     /// ### English
@@ -1022,13 +1142,11 @@ impl View {
     pub(crate) fn paint(&self) -> bool {
         self.log_device_size_if_changed("paint");
 
-        // Servo's embedder API allows painting even without a preceding
-        // `notify_new_frame_ready` (e.g. window damage/repaint). In Minecraft we also want a
-        // robust "always repaint when asked" behavior to avoid getting stuck showing only the
-        // clear color during startup or when notifications are missed.
-        //
-        // We still clear the dirty flag so callers that use it for optimization don't get stuck.
-        let _ = self.dirty_tracker.take_dirty();
+        // Only repaint when Servo says a new frame is ready. The embedder can still call `paint()`
+        // every frame; we will cheaply return `false` when nothing changed.
+        if !self.dirty_tracker.take_dirty() {
+            return false;
+        }
         self.webview.paint();
         true
     }

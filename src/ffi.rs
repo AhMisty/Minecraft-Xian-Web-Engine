@@ -154,6 +154,34 @@ pub unsafe extern "C" fn xian_web_engine_set_config_dir(config_dir: *const c_cha
 
 #[unsafe(no_mangle)]
 /// ### English
+/// Sets the web root directory used by the `xian://` custom protocol (process-global).
+///
+/// This must be called before Servo is initialized.
+///
+/// #### Parameters
+/// - `web_root_dir`: NUL-terminated UTF-8 directory path (NULL/empty clears the override).
+///
+/// #### Returns
+/// - `true` if the path was accepted.
+/// - `false` if Servo is already initialized or the input is invalid UTF-8.
+///
+/// #### Safety
+/// - If non-NULL, `web_root_dir` must point to a valid NUL-terminated string.
+///
+/// ### 中文
+/// 设置 `xian://` 自定义协议使用的 Web 根目录（进程全局）。
+///
+/// 必须在 Servo 初始化之前调用。
+pub unsafe extern "C" fn xian_web_engine_set_web_root_dir(web_root_dir: *const c_char) -> bool {
+    match unsafe { utf8_cstr_opt(web_root_dir) } {
+        Ok(None) => crate::engine::set_web_root_dir(None),
+        Ok(Some(path)) => crate::engine::set_web_root_dir(Some(PathBuf::from(path))),
+        Err(_) => false,
+    }
+}
+
+#[unsafe(no_mangle)]
+/// ### English
 /// Sets the Servo worker thread cap (`0` = no cap, process-global).
 ///
 /// This must be called before Servo is initialized.
@@ -530,6 +558,37 @@ pub unsafe extern "C" fn xian_web_engine_view_set_hidpi_scale_factor(
         return false;
     };
     view.set_hidpi_scale_factor(hidpi_scale_factor)
+}
+
+#[unsafe(no_mangle)]
+/// ### English
+/// Sets whether the view is throttled (backgrounded).
+///
+/// When throttled, Servo may reduce work for animations and timers, which can reduce CPU usage.
+///
+/// #### Parameters
+/// - `view`: View pointer.
+/// - `throttled`: Whether to throttle the view.
+///
+/// #### Safety
+/// - `view` must be either NULL, or a valid pointer returned by `xian_web_engine_view_create`.
+///
+/// ### 中文
+/// 设置该 view 是否节流（后台化）。
+///
+/// 当节流时，Servo 可能会减少动画/计时器等工作量，从而降低 CPU 占用。
+///
+/// #### 参数
+/// - `view`：view 指针。
+/// - `throttled`：是否节流。
+///
+/// #### 安全性
+/// - `view` 必须为 NULL，或由 `xian_web_engine_view_create` 返回的有效指针。
+pub unsafe extern "C" fn xian_web_engine_view_set_throttled(view: *mut View, throttled: bool) {
+    let Some(view) = (unsafe { ref_from_ptr(view) }) else {
+        return;
+    };
+    view.set_throttled(throttled);
 }
 
 #[unsafe(no_mangle)]

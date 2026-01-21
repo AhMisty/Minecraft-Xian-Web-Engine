@@ -26,4 +26,5 @@ mod error;
 mod ffi;
 mod gl;
 mod input;
+mod protocols;
 mod resources;
